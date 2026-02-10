@@ -95,6 +95,9 @@ const (
 	AdditionalPropertiesHypervisorName = "HypervisorName"
 
 	// lookup key in AdditionalProperties
+	AdditionalPropertiesHandlerPoolsEnabled = "HandlerPoolsEnabled"
+
+	// lookup key in AdditionalProperties
 	AdditionalPropertiesSynchronizationPort       = "SynchronizationPort"
 	DefaultSynchronizationPort              int32 = 9185
 
@@ -156,6 +159,21 @@ type KubeVirtDeploymentConfig struct {
 
 	// environment variables from virt-operator to pass along
 	PassthroughEnvVars map[string]string `json:"passthroughEnvVars,omitempty" optional:"true"`
+}
+
+type HandlerPoolConfig struct {
+	// name is a unique identifier appended to "virt-handler" to form the DaemonSet name.
+	// For example, "gpu" results in a DaemonSet named "virt-handler-gpu".
+	Name string `json:"name"`
+
+	// virtHandlerImage overrides the virt-handler container image for this DaemonSet.
+	// If not specified, the default virt-handler image is used.
+	VirtHandlerImage string `json:"virtHandlerImage,omitempty"`
+
+	// nodeSelector specifies labels that must match a node's labels for this DaemonSet's pods
+	// to be scheduled on that node. This is also used to match VMIs to determine which
+	// virt-launcher image to use.
+	NodeSelector map[string]string `json:"nodeSelector"`
 }
 
 var DefaultEnvVarManager EnvVarManager = EnvVarManagerImpl{}
