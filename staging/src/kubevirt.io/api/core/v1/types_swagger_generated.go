@@ -654,6 +654,7 @@ func (KubeVirtSpec) SwaggerDoc() map[string]string {
 		"infra":                    "selectors and tolerations that should apply to KubeVirt infrastructure components\n+optional",
 		"workloads":                "selectors and tolerations that should apply to KubeVirt workloads\n+optional",
 		"synchronizationPlacement": "SynchronizationPlacement allows customization of node placement for synchronization controllers.\nThis can be used to schedule sync controllers on specific nodes (e.g., nodes with access to\nthe cross-cluster migration network). By default, sync controllers use control-plane placement.\n+optional",
+		"handlerPools":             "HandlerPools allows specifying different virt-handler images for different sets of nodes.\n+listType=atomic",
 	}
 }
 
