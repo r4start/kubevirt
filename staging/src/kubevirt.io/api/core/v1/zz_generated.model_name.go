@@ -459,6 +459,11 @@ func (in Handler) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in HandlerPoolConfig) OpenAPIModelName() string {
+	return "io.kubevirt.api.core.v1.HandlerPoolConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in HostDevice) OpenAPIModelName() string {
 	return "io.kubevirt.api.core.v1.HostDevice"
 }

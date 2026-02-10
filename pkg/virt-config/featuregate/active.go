@@ -268,6 +268,14 @@ const (
 	// PortRangesSpec enables the portRanges field, initially only on masquerade interfaces,
 	// allowing compact specification of contiguous port intervals to forward to the VM guest.
 	PortRangesSpec = "PortRangesSpec"
+
+	// Owner: @r4start
+	//
+	// HandlerPools enable the creation of multiple dedicated virt-handler DaemonSets,
+	// allowing independent deployment and release management for each handler pool.
+	// Pool configuration is specified via the HandlerPools field in the KubeVirt
+	// custom resource spec.
+	HandlerPoolsGate = "HandlerPools"
 )
 
 func init() {
@@ -314,4 +322,5 @@ func init() {
 	RegisterFeatureGate(FeatureGate{Name: MigrationDowntimeTuning, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: CrossArchitectureVirtualization, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: PortRangesSpec, State: Alpha})
+	RegisterFeatureGate(FeatureGate{Name: HandlerPoolsGate, State: Alpha})
 }
