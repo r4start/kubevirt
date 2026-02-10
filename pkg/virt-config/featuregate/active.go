@@ -229,6 +229,14 @@ const (
 	// Owner: SIG network
 	// Beta: v1.8
 	LiveUpdateNADRef = "LiveUpdateNADRef"
+
+	// Owner: @r4start
+	//
+	// HandlerPools enable the creation of multiple dedicated virt-handler DaemonSets,
+	// allowing independent deployment and release management for each handler pool.
+	// Pool configuration is specified via the HandlerPools field in the KubeVirt
+	// custom resource spec.
+	HandlerPoolsGate = "HandlerPools"
 )
 
 func init() {
@@ -275,4 +283,5 @@ func init() {
 	RegisterFeatureGate(FeatureGate{Name: ReservedOverheadMemlock, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: OptOutRoleAggregation, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: LiveUpdateNADRef, State: Beta})
+	RegisterFeatureGate(FeatureGate{Name: HandlerPoolsGate, State: Alpha})
 }
