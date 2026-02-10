@@ -351,6 +351,14 @@ const (
 	// VMs already created with the field keep using the declarative path even if
 	// the gate is later disabled.
 	DeclarativeVMState = "DeclarativeVMState"
+
+	// Owner: @r4start
+	//
+	// HandlerPools enable the creation of multiple dedicated virt-handler DaemonSets,
+	// allowing independent deployment and release management for each handler pool.
+	// Pool configuration is specified via the HandlerPools field in the KubeVirt
+	// custom resource spec.
+	HandlerPoolsGate = "HandlerPools"
 )
 
 func init() {
@@ -405,4 +413,5 @@ func init() {
 	RegisterFeatureGate(FeatureGate{Name: ARM64SecureBoot, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: DeclarativeVMState, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: ExternalVMSnapshotGate, State: Alpha})
+	RegisterFeatureGate(FeatureGate{Name: HandlerPoolsGate, State: Alpha})
 }

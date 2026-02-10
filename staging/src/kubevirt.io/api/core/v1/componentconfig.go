@@ -46,3 +46,24 @@ type ComponentConfig struct {
 	//+optional
 	Replicas *uint8 `json:"replicas,omitempty"`
 }
+
+type HandlerPoolConfig struct {
+	// name is a unique identifier appended to "virt-handler" to form the DaemonSet name.
+	// For example, "gpu" results in a DaemonSet named "virt-handler-gpu".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=48
+	Name string `json:"name"`
+
+	// virtHandlerImage overrides the virt-handler container image for this DaemonSet.
+	// If not specified, the default virt-handler image is used.
+	// +optional
+	VirtHandlerImage string `json:"virtHandlerImage,omitempty"`
+
+	// nodeSelector specifies labels that must match a node's labels for this DaemonSet's pods
+	// to be scheduled on that node. This is also used to match VMIs to determine which
+	// virt-launcher image to use.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinProperties=1
+	NodeSelector map[string]string `json:"nodeSelector"`
+}
