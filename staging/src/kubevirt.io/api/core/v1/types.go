@@ -2560,6 +2560,10 @@ type KubeVirtSpec struct {
 	// +optional
 	Workloads *ComponentConfig `json:"workloads,omitempty"`
 
+	// HandlerPools allows specifying different virt-handler images for different sets of nodes.
+	// +listType=atomic
+	HandlerPools []HandlerPoolConfig `json:"handlerPools,omitempty"`
+
 	CustomizeComponents CustomizeComponents `json:"customizeComponents,omitempty"`
 }
 

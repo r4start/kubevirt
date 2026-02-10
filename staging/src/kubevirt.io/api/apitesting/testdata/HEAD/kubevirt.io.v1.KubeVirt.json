@@ -913,6 +913,15 @@
       },
       "replicas": 248
     },
+    "handlerPools": [
+      {
+        "name": "nameValue",
+        "virtHandlerImage": "virtHandlerImageValue",
+        "nodeSelector": {
+          "nodeSelectorKey": "nodeSelectorValue"
+        }
+      }
+    ],
     "customizeComponents": {
       "patches": [
         {

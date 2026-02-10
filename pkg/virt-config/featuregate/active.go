@@ -190,6 +190,14 @@ const (
 	// Template enables the deployment of virt-template components by virt-operator.
 	// Alpha: v1.8.0
 	Template = "Template"
+
+	// Owner: @r4start
+	//
+	// HandlerPools enable the creation of multiple dedicated virt-handler DaemonSets,
+	// allowing independent deployment and release management for each handler pool.
+	// Pool configuration is specified via the HandlerPools field in the KubeVirt
+	// custom resource spec.
+	HandlerPoolsGate = "HandlerPools"
 )
 
 func init() {
@@ -231,4 +239,5 @@ func init() {
 	RegisterFeatureGate(FeatureGate{Name: DisableNADResourceInjection, State: Beta})
 	RegisterFeatureGate(FeatureGate{Name: RebootPolicy, State: Alpha})
 	RegisterFeatureGate(FeatureGate{Name: Template, State: Alpha})
+	RegisterFeatureGate(FeatureGate{Name: HandlerPoolsGate, State: Alpha})
 }

@@ -436,6 +436,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"kubevirt.io/api/core/v1.GuestAgentPing":                                                          schema_kubevirtio_api_core_v1_GuestAgentPing(ref),
 		"kubevirt.io/api/core/v1.HPETTimer":                                                               schema_kubevirtio_api_core_v1_HPETTimer(ref),
 		"kubevirt.io/api/core/v1.Handler":                                                                 schema_kubevirtio_api_core_v1_Handler(ref),
+		"kubevirt.io/api/core/v1.HandlerPoolConfig":                                                       schema_kubevirtio_api_core_v1_HandlerPoolConfig(ref),
 		"kubevirt.io/api/core/v1.HostDevice":                                                              schema_kubevirtio_api_core_v1_HostDevice(ref),
 		"kubevirt.io/api/core/v1.HostDisk":                                                                schema_kubevirtio_api_core_v1_HostDisk(ref),
 		"kubevirt.io/api/core/v1.HotplugVolumeSource":                                                     schema_kubevirtio_api_core_v1_HotplugVolumeSource(ref),
@@ -21731,6 +21732,50 @@ func schema_kubevirtio_api_core_v1_Handler(ref common.ReferenceCallback) common.
 	}
 }
 
+func schema_kubevirtio_api_core_v1_HandlerPoolConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "name is a unique identifier appended to \"virt-handler\" to form the DaemonSet name. For example, \"gpu\" results in a DaemonSet named \"virt-handler-gpu\".",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"virtHandlerImage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "virtHandlerImage overrides the virt-handler container image for this DaemonSet. If not specified, the default virt-handler image is used.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"nodeSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "nodeSelector specifies labels that must match a node's labels for this DaemonSet's pods to be scheduled on that node. This is also used to match VMIs to determine which virt-launcher image to use.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name", "nodeSelector"},
+			},
+		},
+	}
+}
+
 func schema_kubevirtio_api_core_v1_HostDevice(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -23270,6 +23315,25 @@ func schema_kubevirtio_api_core_v1_KubeVirtSpec(ref common.ReferenceCallback) co
 							Ref:         ref("kubevirt.io/api/core/v1.ComponentConfig"),
 						},
 					},
+					"handlerPools": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "HandlerPools allows specifying different virt-handler images for different sets of nodes.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("kubevirt.io/api/core/v1.HandlerPoolConfig"),
+									},
+								},
+							},
+						},
+					},
 					"customizeComponents": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
@@ -23280,7 +23344,7 @@ func schema_kubevirtio_api_core_v1_KubeVirtSpec(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.LocalObjectReference", "kubevirt.io/api/core/v1.ComponentConfig", "kubevirt.io/api/core/v1.CustomizeComponents", "kubevirt.io/api/core/v1.KubeVirtCertificateRotateStrategy", "kubevirt.io/api/core/v1.KubeVirtConfiguration", "kubevirt.io/api/core/v1.KubeVirtWorkloadUpdateStrategy"},
+			"k8s.io/api/core/v1.LocalObjectReference", "kubevirt.io/api/core/v1.ComponentConfig", "kubevirt.io/api/core/v1.CustomizeComponents", "kubevirt.io/api/core/v1.HandlerPoolConfig", "kubevirt.io/api/core/v1.KubeVirtCertificateRotateStrategy", "kubevirt.io/api/core/v1.KubeVirtConfiguration", "kubevirt.io/api/core/v1.KubeVirtWorkloadUpdateStrategy"},
 	}
 }
 
