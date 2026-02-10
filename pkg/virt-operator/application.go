@@ -533,7 +533,8 @@ func (app *VirtOperatorApp) prepareCertManagers() {
 }
 
 func (app *VirtOperatorApp) shouldChangeLogVerbosity() {
-	verbosity := app.clusterConfig.GetVirtOperatorVerbosity(app.host)
+	//verbosity := app.clusterConfig.GetVirtOperatorVerbosity(app.host)
+	verbosity := 6
 	if err := log.Log.SetVerbosityLevel(int(verbosity)); err != nil {
 		log.Log.Warningf("failed up update log verbosity to %d: %v", verbosity, err)
 	} else {
