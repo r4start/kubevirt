@@ -2693,6 +2693,10 @@ type KubeVirtSpec struct {
 	// +optional
 	SynchronizationPlacement *ComponentConfig `json:"synchronizationPlacement,omitempty"`
 
+	// HandlerPools allows specifying different virt-handler images for different sets of nodes.
+	// +listType=atomic
+	HandlerPools []HandlerPoolConfig `json:"handlerPools,omitempty"`
+
 	CustomizeComponents CustomizeComponents `json:"customizeComponents,omitempty"`
 }
 
