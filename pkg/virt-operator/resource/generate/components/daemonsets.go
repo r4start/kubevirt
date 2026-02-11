@@ -83,7 +83,7 @@ func NewHandlerDaemonSet(
 	if config.HandlerPoolsEnabled() && pool != nil {
 		deploymentName = fmt.Sprintf("%s-%s", VirtHandlerName, pool.Name)
 		if pool.VirtHandlerImage != "" {
-			imageName = fmt.Sprintf("%s%s", config.GetImagePrefix(), pool.VirtHandlerImage)
+			imageName = pool.VirtHandlerImage
 		}
 	} else {
 		deploymentName = VirtHandlerName
@@ -96,7 +96,7 @@ func NewHandlerDaemonSet(
 
 	env := operatorutil.NewEnvVarMap(config.GetExtraEnv())
 	podTemplateSpec := newPodTemplateSpec(
-		deploymentName, productName, productVersion, productComponent,
+		VirtHandlerName, productName, productVersion, productComponent,
 		image, config.GetImagePullPolicy(), config.GetImagePullSecrets(), nil, env,
 	)
 
@@ -127,6 +127,31 @@ func NewHandlerDaemonSet(
 		for k, v := range pool.NodeSelector {
 			podTemplateSpec.Spec.NodeSelector[k] = v
 		}
+
+		var antiAffinity []corev1.PodAffinityTerm
+		for _, otherPool := range config.HandlerPools {
+			if otherPool.Name == pool.Name {
+				continue
+			}
+			antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						virtv1.AppLabel:  VirtHandlerName,
+						handlerPoolLabel: otherPool.Name,
+					},
+				},
+				TopologyKey: "kubernetes.io/hostname",
+			})
+		}
+		if podTemplateSpec.Spec.Affinity == nil {
+			podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+		}
+		if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+			podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
+		}
+
+		podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
+		podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
 	}
 
 	daemonset := &appsv1.DaemonSet{
@@ -148,7 +173,7 @@ func NewHandlerDaemonSet(
 			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"kubevirt.io": VirtHandlerName,
+					virtv1.AppLabel: VirtHandlerName,
 				},
 			},
 			Template: *podTemplateSpec,
@@ -156,7 +181,6 @@ func NewHandlerDaemonSet(
 	}
 
 	if config.HandlerPoolsEnabled() && pool != nil {
-		daemonset.Spec.Selector.MatchLabels["kubevirt.io"] = deploymentName
 		daemonset.Spec.Selector.MatchLabels[handlerPoolLabel] = pool.Name
 	}
 
