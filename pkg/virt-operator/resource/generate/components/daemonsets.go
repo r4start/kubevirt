@@ -30,6 +30,7 @@ const (
 	SidecarShimName                = "sidecar-shim"
 	etcMultipath                   = "etc-multipath"
 	SupportsMigrationCNsValidation = "kubevirt.io/supports-migration-cn-types"
+	handlerPoolLabel               = "kubevirt.io/handler-pool"
 )
 
 func RenderPrHelperContainer(image string, pullPolicy corev1.PullPolicy) corev1.Container {
@@ -67,16 +68,37 @@ func RenderPrHelperContainer(image string, pullPolicy corev1.PullPolicy) corev1.
 	}
 }
 
-func NewHandlerDaemonSet(config *operatorutil.KubeVirtDeploymentConfig, productName, productVersion, productComponent string) *appsv1.DaemonSet {
+func NewHandlerDaemonSet(
+	config *operatorutil.KubeVirtDeploymentConfig,
+	productName string,
+	productVersion string,
+	productComponent string,
+	pool *operatorutil.HandlerPoolConfig,
+) *appsv1.DaemonSet {
+	var (
+		deploymentName string
+		imageName      = fmt.Sprintf("%s%s", config.GetImagePrefix(), VirtHandlerName)
+	)
 
-	deploymentName := VirtHandlerName
-	imageName := fmt.Sprintf("%s%s", config.GetImagePrefix(), deploymentName)
+	if config.HandlerPoolsEnabled() && pool != nil {
+		deploymentName = fmt.Sprintf("%s-%s", VirtHandlerName, pool.Name)
+		if pool.VirtHandlerImage != "" {
+			imageName = fmt.Sprintf("%s%s", config.GetImagePrefix(), pool.VirtHandlerImage)
+		}
+	} else {
+		deploymentName = VirtHandlerName
+	}
+
 	image := config.VirtHandlerImage
 	if image == "" {
 		image = fmt.Sprintf("%s/%s%s", config.GetImageRegistry(), imageName, AddVersionSeparatorPrefix(config.GetHandlerVersion()))
 	}
+
 	env := operatorutil.NewEnvVarMap(config.GetExtraEnv())
-	podTemplateSpec := newPodTemplateSpec(deploymentName, productName, productVersion, productComponent, image, config.GetImagePullPolicy(), config.GetImagePullSecrets(), nil, env)
+	podTemplateSpec := newPodTemplateSpec(
+		deploymentName, productName, productVersion, productComponent,
+		image, config.GetImagePullPolicy(), config.GetImagePullSecrets(), nil, env,
+	)
 
 	launcherImage := config.VirtLauncherImage
 	if launcherImage == "" {
@@ -97,6 +119,16 @@ func NewHandlerDaemonSet(config *operatorutil.KubeVirtDeploymentConfig, productN
 	}
 	podTemplateSpec.Annotations["openshift.io/required-scc"] = "kubevirt-handler"
 
+	if config.HandlerPoolsEnabled() && pool != nil {
+		podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
+		if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
+			podTemplateSpec.Spec.NodeSelector = make(map[string]string)
+		}
+		for k, v := range pool.NodeSelector {
+			podTemplateSpec.Spec.NodeSelector[k] = v
+		}
+	}
+
 	daemonset := &appsv1.DaemonSet{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -104,7 +136,7 @@ func NewHandlerDaemonSet(config *operatorutil.KubeVirtDeploymentConfig, productN
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: config.GetNamespace(),
-			Name:      VirtHandlerName,
+			Name:      deploymentName,
 			Labels: map[string]string{
 				virtv1.AppLabel:                VirtHandlerName,
 				SupportsMigrationCNsValidation: "true",
@@ -121,6 +153,11 @@ func NewHandlerDaemonSet(config *operatorutil.KubeVirtDeploymentConfig, productN
 			},
 			Template: *podTemplateSpec,
 		},
+	}
+
+	if config.HandlerPoolsEnabled() && pool != nil {
+		daemonset.Spec.Selector.MatchLabels["kubevirt.io"] = deploymentName
+		daemonset.Spec.Selector.MatchLabels[handlerPoolLabel] = pool.Name
 	}
 
 	if productVersion != "" {
