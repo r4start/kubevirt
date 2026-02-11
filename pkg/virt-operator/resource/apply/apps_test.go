@@ -321,7 +321,7 @@ var _ = Describe("Apply Apps", func() {
 				KubeVirtVersion: Version,
 				Namespace:       Namespace,
 			}
-			daemonSet = components.NewHandlerDaemonSet(virtHandlerConfig, "", "", "")
+			daemonSet = components.NewHandlerDaemonSet(virtHandlerConfig, "", "", "", nil)
 			markHandlerReady(daemonSet)
 			daemonSet.UID = "random-id"
 			daemonSet.Generation = 1
