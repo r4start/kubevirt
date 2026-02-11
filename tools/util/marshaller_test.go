@@ -44,7 +44,7 @@ func TestMarshallObject(t *testing.T) {
 		},
 	}
 
-	handler := components.NewHandlerDaemonSet(config, "", "", "")
+	handler := components.NewHandlerDaemonSet(config, "", "", "", nil)
 	writer := strings.Builder{}
 
 	MarshallObject(handler, &writer)
