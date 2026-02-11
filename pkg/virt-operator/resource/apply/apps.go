@@ -16,6 +16,7 @@ import (
 	"kubevirt.io/client-go/log"
 
 	v1 "kubevirt.io/api/core/v1"
+	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	"kubevirt.io/kubevirt/pkg/pointer"
@@ -304,7 +305,7 @@ func (r *Reconciler) syncDaemonSet(daemonSet *appsv1.DaemonSet) (bool, error) {
 	injectOperatorMetadata(kv, &daemonSet.Spec.Template.ObjectMeta, imageTag, imageRegistry, id, false)
 	placement.InjectPlacementMetadata(kv.Spec.Workloads, &daemonSet.Spec.Template.Spec, placement.AnyNode)
 
-	if daemonSet.GetName() == "virt-handler" {
+	if strings.HasPrefix(daemonSet.GetName(), components.VirtHandlerName) {
 		setMaxDevices(r.kv, daemonSet)
 	}
 

@@ -60,6 +60,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	apiregv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+
 	v1 "kubevirt.io/api/core/v1"
 	instancetypev1beta1 "kubevirt.io/api/instancetype/v1beta1"
 	"kubevirt.io/client-go/kubecli"
@@ -78,7 +79,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-operator/resource/apply"
 	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/components"
 	vap "kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/components/validatingadmissionpolicies"
-	install "kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
+	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
 	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/rbac"
 	"kubevirt.io/kubevirt/pkg/virt-operator/util"
 )
@@ -1319,7 +1320,7 @@ func (k *KubeVirtTestData) addAllWithExclusionMap(config *util.KubeVirtDeploymen
 	controller := components.NewControllerDeployment(config, "", "", "")
 	controllerPdb := components.NewPodDisruptionBudgetForDeployment(controller)
 
-	handler := components.NewHandlerDaemonSet(config, "", "", "")
+	handler := components.NewHandlerDaemonSet(config, "", "", "", nil)
 	all = append(all, apiDeployment, apiDeploymentPdb, controller, controllerPdb, handler)
 
 	exportProxy := components.NewExportProxyDeployment(config, "", "", "")
@@ -1518,7 +1519,7 @@ func (k *KubeVirtTestData) addAllButHandler(config *util.KubeVirtDeploymentConfi
 
 func (k *KubeVirtTestData) addVirtHandler(config *util.KubeVirtDeploymentConfig, kv *v1.KubeVirt) {
 	config.Namespace = NAMESPACE
-	handler := components.NewHandlerDaemonSet(config, "", "", "")
+	handler := components.NewHandlerDaemonSet(config, "", "", "", nil)
 
 	c, _ := apply.NewCustomizer(kv.Spec.CustomizeComponents)
 
@@ -1796,7 +1797,7 @@ func (k *KubeVirtTestData) addPodsWithIndividualConfigs(config *util.KubeVirtDep
 	deployments = append(deployments, controller)
 
 	configHandler.Namespace = NAMESPACE
-	handler := components.NewHandlerDaemonSet(configHandler, "", "", "")
+	handler := components.NewHandlerDaemonSet(configHandler, "", "", "", nil)
 	pod = &k8sv1.Pod{
 		ObjectMeta: handler.Spec.Template.ObjectMeta,
 		Spec:       handler.Spec.Template.Spec,
@@ -2535,7 +2536,7 @@ var _ = Describe("KubeVirt Operator", func() {
 			config.PassthroughEnvVars = map[string]string{envKey: envVal}
 			config.Namespace = NAMESPACE
 
-			handlerDaemonset := components.NewHandlerDaemonSet(config, "", "", "")
+			handlerDaemonset := components.NewHandlerDaemonSet(config, "", "", "", nil)
 			Expect(handlerDaemonset.Spec.Template.Spec.Containers[0].Env).To(ContainElement(k8sv1.EnvVar{Name: envKey, Value: envVal}))
 		})
 
@@ -3282,7 +3283,7 @@ var _ = Describe("KubeVirt Operator", func() {
 				apiDeployment := components.NewApiServerDeployment(customConfig, "", "", "")
 				controllerDeployment := components.NewControllerDeployment(customConfig, "", "", "")
 				exportProxyDeployment := components.NewExportProxyDeployment(customConfig, "", "", "")
-				handlerDaemonset := components.NewHandlerDaemonSet(customConfig, "", "", "")
+				handlerDaemonset := components.NewHandlerDaemonSet(customConfig, "", "", "", nil)
 				// omitempty ignores the field's zero value resulting in the json patch test op breaking
 				apiDeployment.ObjectMeta.Generation = 123
 				controllerDeployment.ObjectMeta.Generation = 123
