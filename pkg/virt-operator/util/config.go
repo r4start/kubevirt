@@ -147,6 +147,8 @@ type KubeVirtDeploymentConfig struct {
 
 	// environment variables from virt-operator to pass along
 	PassthroughEnvVars map[string]string `json:"passthroughEnvVars,omitempty" optional:"true"`
+
+	HandlerPools []HandlerPoolConfig `json:"handlerPools,omitempty" optional:"true"`
 }
 
 type HandlerPoolConfig struct {
@@ -181,15 +183,34 @@ func GetTargetConfigFromKVWithEnvVarManager(kv *v1.KubeVirt, envVarManager EnvVa
 			if v == featuregate.PersistentReservation {
 				additionalProperties[AdditionalPropertiesPersistentReservationEnabled] = ""
 			}
+			if v == featuregate.HandlerPoolsGate {
+				additionalProperties[AdditionalPropertiesHandlerPoolsEnabled] = ""
+			}
 		}
 	}
+
+	var handlerPools []HandlerPoolConfig
+	if _, enabled := additionalProperties[AdditionalPropertiesHandlerPoolsEnabled]; enabled {
+		for _, pool := range kv.Spec.HandlerPools {
+			handlerPools = append(handlerPools, HandlerPoolConfig{
+				Name:             pool.Name,
+				VirtHandlerImage: pool.VirtHandlerImage,
+				NodeSelector:     pool.NodeSelector,
+			})
+		}
+	}
+
 	// don't use status.target* here, as that is always set, but we need to know if it was set by the spec and with that
 	// overriding shasums from env vars
-	return getConfig(kv.Spec.ImageRegistry,
+	config := getConfig(kv.Spec.ImageRegistry,
 		kv.Spec.ImageTag,
 		kv.Namespace,
 		additionalProperties,
 		envVarManager)
+
+	config.HandlerPools = handlerPools
+
+	return config
 }
 
 func getKVMapFromSpec(spec v1.KubeVirtSpec) map[string]string {
@@ -205,6 +226,15 @@ func getKVMapFromSpec(spec v1.KubeVirtSpec) map[string]string {
 			value, err := json.Marshal(v.Field(i).Interface())
 			if err != nil {
 				fmt.Printf("Cannot encode ImagePullsecrets to JSON %v", err)
+			} else {
+				kvMap[name] = string(value)
+			}
+			continue
+		}
+		if name == "HandlerPools" {
+			value, err := json.Marshal(v.Field(i).Interface())
+			if err != nil {
+				fmt.Printf("Cannot encode HandlerPools to JSON %v", err)
 			} else {
 				kvMap[name] = string(value)
 			}
@@ -511,6 +541,11 @@ func (c *KubeVirtDeploymentConfig) GetImagePullSecrets() []k8sv1.LocalObjectRefe
 
 func (c *KubeVirtDeploymentConfig) PersistentReservationEnabled() bool {
 	_, enabled := c.AdditionalProperties[AdditionalPropertiesPersistentReservationEnabled]
+	return enabled
+}
+
+func (c *KubeVirtDeploymentConfig) HandlerPoolsEnabled() bool {
+	_, enabled := c.AdditionalProperties[AdditionalPropertiesHandlerPoolsEnabled]
 	return enabled
 }
 
