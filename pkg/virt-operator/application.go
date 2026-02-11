@@ -65,7 +65,7 @@ import (
 	clusterutil "kubevirt.io/kubevirt/pkg/util/cluster"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 	"kubevirt.io/kubevirt/pkg/virt-controller/leaderelectionconfig"
-	install "kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
+	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
 	"kubevirt.io/kubevirt/pkg/virt-operator/util"
 )
 
@@ -538,8 +538,7 @@ func (app *VirtOperatorApp) prepareCertManagers() {
 }
 
 func (app *VirtOperatorApp) shouldChangeLogVerbosity() {
-	//verbosity := app.clusterConfig.GetVirtOperatorVerbosity(app.host)
-	verbosity := 6
+	verbosity := app.clusterConfig.GetVirtOperatorVerbosity(app.host)
 	if err := log.Log.SetVerbosityLevel(int(verbosity)); err != nil {
 		log.Log.Warningf("failed up update log verbosity to %d: %v", verbosity, err)
 	} else {
