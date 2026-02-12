@@ -14,6 +14,7 @@ import (
 	appv1 "k8s.io/api/apps/v1"
 	k8sv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -395,6 +396,110 @@ var _ = Describe("Node controller with", func() {
 			Entry("is not created when daemonSet is not stable", false, UnHealthVirtHandlerDS(), true, false),
 			Entry("is created when virt-handler is missing on node with vmis", false, HealthVirtHandlerDS(), true, true),
 		)
+	})
+
+	Context("check daemonset status", func() {
+		var selector fields.Selector
+
+		BeforeEach(func() {
+			selector = fields.ParseSelectorOrDie("kubevirt.io=virt-handler")
+		})
+
+		It("should evaluate status using only the daemonset eligible for the node", func() {
+			node := NewHealthyNode("testnode")
+			node.Labels["pool"] = "a"
+
+			eligible := HealthVirtHandlerDS()
+			eligible.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "a"}
+
+			ineligible := UnHealthVirtHandlerDS()
+			ineligible.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "b"}
+
+			kubeClient.Fake.PrependReactor("list", "daemonsets",
+				func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*eligible, *ineligible}}, nil
+				},
+			)
+
+			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(running).To(BeTrue())
+		})
+
+		It("should return an error when multiple daemonsets are eligible on the node", func() {
+			node := NewHealthyNode("testnode")
+			node.Labels["pool"] = "a"
+
+			first := HealthVirtHandlerDS()
+			first.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "a"}
+
+			second := HealthVirtHandlerDS()
+			second.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "a"}
+
+			kubeClient.Fake.PrependReactor("list", "daemonsets",
+				func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*first, *second}}, nil
+				},
+			)
+
+			_, err := checkDaemonSetStatus(virtClient, selector, node)
+			Expect(err).To(MatchError(ContainSubstring("several virt-handler DaemonSets are running on the node")))
+		})
+
+		It("should return an error when no daemonset is eligible on the node", func() {
+			node := NewHealthyNode("testnode")
+			node.Labels["pool"] = "a"
+
+			first := HealthVirtHandlerDS()
+			first.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "b"}
+
+			second := HealthVirtHandlerDS()
+			second.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "c"}
+
+			kubeClient.Fake.PrependReactor("list", "daemonsets",
+				func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*first, *second}}, nil
+				},
+			)
+
+			_, err := checkDaemonSetStatus(virtClient, selector, node)
+			Expect(err).To(MatchError(ContainSubstring("virt-handler DaemonSet isn't running on the node")))
+		})
+
+		It("should consider NoSchedule taints and tolerations for eligibility", func() {
+			node := NewHealthyNode("testnode")
+			node.Labels["pool"] = "a"
+			node.Spec.Taints = []k8sv1.Taint{
+				{
+					Key:    "dedicated",
+					Value:  "infra",
+					Effect: k8sv1.TaintEffectNoSchedule,
+				},
+			}
+
+			untolerated := HealthVirtHandlerDS()
+			untolerated.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "b"}
+
+			tolerated := HealthVirtHandlerDS()
+			tolerated.Spec.Template.Spec.Tolerations = []k8sv1.Toleration{
+				{
+					Key:      "dedicated",
+					Operator: k8sv1.TolerationOpEqual,
+					Value:    "infra",
+					Effect:   k8sv1.TaintEffectNoSchedule,
+				},
+			}
+
+			kubeClient.Fake.PrependReactor("list", "daemonsets",
+				func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*untolerated, *tolerated}}, nil
+				},
+			)
+
+			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(running).To(BeTrue())
+		})
 	})
 
 	AfterEach(func() {
