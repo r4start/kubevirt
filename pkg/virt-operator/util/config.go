@@ -718,6 +718,10 @@ func fieldsToString(v reflect.Value) string {
 			result += fieldsToString(field)
 		case reflect.String:
 			result += field.String()
+		case reflect.Slice, reflect.Array:
+			for i := 0; i < field.Len(); i++ {
+				result += fieldsToString(field.Index(i))
+			}
 		default:
 			panic(fmt.Sprintf("fieldsToString unable to handle field %s", fieldName))
 		}
