@@ -32,17 +32,19 @@ func virtHandlerAlerts(namespace string) []promv1.Rule {
 			Alert: "VirtHandlerDaemonSetRolloutFailing",
 			Expr: intstr.FromString(
 				fmt.Sprintf("(%s - %s) != 0",
-					fmt.Sprintf("kube_daemonset_status_number_ready{namespace='%s', daemonset='virt-handler'}", namespace),
-					fmt.Sprintf("kube_daemonset_status_desired_number_scheduled{namespace='%s', daemonset='virt-handler'}", namespace))),
+					fmt.Sprintf("sum(kube_daemonset_status_number_ready{namespace='%s', daemonset=~'virt-handler.*'}) by (daemonset)", namespace),
+					fmt.Sprintf("sum(kube_daemonset_status_desired_number_scheduled{namespace='%s', daemonset=~'virt-handler.*'}) by (daemonset)", namespace))),
 			For: ptr.To(promv1.Duration("15m")),
 			Annotations: map[string]string{
-				summaryAnnotationKey: "Some virt-handlers failed to roll out",
+				summaryAnnotationKey:     "Some virt-handlers failed to roll out",
+				descriptionAnnotationKey: "Rollout of {{ $labels.daemonset }} has failed",
 			},
 			Labels: map[string]string{
 				severityAlertLabelKey:        "warning",
 				operatorHealthImpactLabelKey: "warning",
 			},
 		},
+		// TODO(r4start): make this alert per DS.
 		{
 			Alert: "VirtHandlerRESTErrorsBurst",
 			Expr:  intstr.FromString(getErrorRatio(namespace, "virt-handler", "(4|5)[0-9][0-9]", fiveMinutes) + " >= 0.8"),
