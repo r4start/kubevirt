@@ -105,6 +105,24 @@ func virtRecordingRules(namespace string) []operatorrules.RecordingRule {
 			"The number of virt-operator pods that are leading.",
 			fmt.Sprintf("sum(kubevirt_virt_operator_leading_status{namespace='%s'}) or vector(0)", namespace),
 		),
+
+		newRecordingRule(
+			"cluster:kubevirt_virt_handler_up_by_pool:sum",
+			"The number of virt-handler pods that are up in each pool.",
+			fmt.Sprintf(`
+		     sum by (namespace, pool) (
+		       label_replace(
+		         up{namespace="%[1]s", pod=~"virt-handler-.*"}
+		         * on(namespace, pod) group_left(label_kubevirt_io_handler_pool)
+		         kube_pod_labels{
+		           namespace="%[1]s",
+		           pod=~"virt-handler-.*",
+		           label_kubevirt_io_handler_pool!=""
+		         },
+		       "pool", "$1", "label_kubevirt_io_handler_pool", "(.*)"
+		       )
+		     ) or vector(0)`, namespace)
+		),
 	}
 }
 
