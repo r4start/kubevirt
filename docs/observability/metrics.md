@@ -114,6 +114,7 @@
 | kubevirt_virt_controller_ready | Recording rule | Gauge | The number of virt-controller pods that are ready. |
 | kubevirt_virt_controller_up | Recording rule | Gauge | The number of virt-controller pods that are up. |
 | kubevirt_virt_handler_up | Recording rule | Gauge | The number of virt-handler pods that are up. |
+| kubevirt_virt_handler_up_by_pool | Recording rule | Gauge | The number of virt-handler pods that are up in each pool. |
 | kubevirt_virt_operator_leading | Recording rule | Gauge | The number of virt-operator pods that are leading. |
 | kubevirt_virt_operator_ready | Recording rule | Gauge | The number of virt-operator pods that are ready. |
 | kubevirt_virt_operator_up | Recording rule | Gauge | The number of virt-operator pods that are up. |

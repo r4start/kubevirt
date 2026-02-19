@@ -118,5 +118,25 @@ func virtRecordingRules(namespace string) []operatorrules.RecordingRule {
 			MetricType: operatormetrics.GaugeType,
 			Expr:       intstr.FromString(fmt.Sprintf("sum(up{pod=~'virt-handler-.*', namespace='%s'}) or vector(0)", namespace)),
 		},
+		{
+			MetricsOpts: operatormetrics.MetricOpts{
+				Name: "kubevirt_virt_handler_up_by_pool",
+				Help: "The number of virt-handler pods that are up in each pool.",
+			},
+			MetricType: operatormetrics.GaugeType,
+			Expr: intstr.FromString(fmt.Sprintf(`
+		     sum by (namespace, pool) (
+		       label_replace(
+		         up{namespace="%[1]s", pod=~"virt-handler-.*"}
+		         * on(namespace, pod) group_left(label_kubevirt_io_handler_pool)
+		         kube_pod_labels{
+		           namespace="%[1]s",
+		           pod=~"virt-handler-.*",
+		           label_kubevirt_io_handler_pool!=""
+		         },
+		       "pool", "$1", "label_kubevirt_io_handler_pool", "(.*)"
+		       )
+		     ) or vector(0)`, namespace)),
+		},
 	}
 }
