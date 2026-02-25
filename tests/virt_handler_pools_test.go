@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,32 +31,36 @@ import (
 	. "github.com/onsi/gomega"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 
 	k6tv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 
 	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
-	kvconfig "kubevirt.io/kubevirt/tests/libkubevirt/config"
 
 	"kubevirt.io/kubevirt/tests/decorators"
 	"kubevirt.io/kubevirt/tests/flags"
 	"kubevirt.io/kubevirt/tests/framework/kubevirt"
 	"kubevirt.io/kubevirt/tests/libkubevirt"
+	kvconfig "kubevirt.io/kubevirt/tests/libkubevirt/config"
+	"kubevirt.io/kubevirt/tests/testsuite"
 )
 
 var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOperator, func() {
 	const (
 		poolSelectorLabelName = "handler-pool"
 		virtHandlerName       = "virt-handler"
+		poolNamePrefix        = "pool"
 	)
 
 	var (
-		originalConfig k6tv1.KubeVirtConfiguration
+		originalSpec *k6tv1.KubeVirtSpec
 
 		client kubecli.KubevirtClient
 		ctx    context.Context
@@ -66,7 +71,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		client = kubevirt.Client()
 
 		kv := libkubevirt.GetCurrentKv(client)
-		originalConfig = *kv.Spec.Configuration.DeepCopy()
+		originalSpec = kv.Spec.DeepCopy()
 
 		kvconfig.EnableFeatureGate(featuregate.HandlerPoolsGate)
 
@@ -81,22 +86,47 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	})
 
 	AfterEach(func() {
-		kvconfig.UpdateKubeVirtConfigValueAndWait(originalConfig)
+		var kv *k6tv1.KubeVirt
 
-		patch := []byte(fmt.Sprintf(`[{"op": "remove", "path":"/metadata/labels/%s"}]`, poolSelectorLabelName))
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv = libkubevirt.GetCurrentKv(client).DeepCopy()
+			kv.Spec = *originalSpec.DeepCopy()
+			_, err := client.KubeVirt(kv.Namespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
+
+		Expect(err).ToNot(HaveOccurred())
+
+		patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{"%s":null}}}`, poolSelectorLabelName))
 		nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 		Expect(err).ToNot(HaveOccurred())
+
 		for _, node := range nodesList.Items {
-			_, err = client.CoreV1().Nodes().Patch(ctx, node.Name, types.JSONPatchType, patch, metav1.PatchOptions{})
+			_, err = client.CoreV1().Nodes().Patch(ctx, node.Name, types.MergePatchType, patch, metav1.PatchOptions{})
 			Expect(err).ToNot(HaveOccurred())
 		}
 
 		Eventually(func(g Gomega) {
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
 			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
 			g.Expect(ds.Status.DesiredNumberScheduled).To(Equal(ds.Status.NumberReady))
 			g.Expect(ds.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.IntValue()).To(Equal(1))
 		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler to be ready")
+
+		Eventually(func(g Gomega) {
+			daemonSets, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).List(ctx, metav1.ListOptions{})
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(len(daemonSets.Items)).To(BeNumerically(">", 0))
+
+			prefix := fmt.Sprintf("%s-%s", virtHandlerName, poolNamePrefix)
+			hasPool := slices.ContainsFunc(daemonSets.Items, func(ds appsv1.DaemonSet) bool {
+				return strings.HasPrefix(ds.Name, prefix)
+			})
+			g.Expect(hasPool).To(BeFalse())
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler pools to be ready")
+
+		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
 	})
 
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient, kb *k6tv1.KubeVirt) error {
@@ -151,16 +181,16 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		return nil
 	}
 
-	It("should successfully deploy several virt-handler pools", func() {
+	generatePools := func(ctx context.Context, client kubecli.KubevirtClient) ([]k6tv1.HandlerPoolConfig, error) {
 		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
+		if err != nil {
+			return nil, err
+		}
 
-		poolsKv := libkubevirt.GetCurrentKv(client).DeepCopy()
-		poolsKv.Spec.HandlerPools = make([]k6tv1.HandlerPoolConfig, 0, ds.Status.NumberReady)
-
+		handlerPools := make([]k6tv1.HandlerPoolConfig, 0, ds.Status.NumberReady)
 		for i := range ds.Status.NumberReady {
-			poolName := fmt.Sprintf("pool-%d", i)
-			poolsKv.Spec.HandlerPools = append(poolsKv.Spec.HandlerPools,
+			poolName := fmt.Sprintf("%s-%d", poolNamePrefix, i)
+			handlerPools = append(handlerPools,
 				k6tv1.HandlerPoolConfig{
 					Name: poolName,
 					NodeSelector: map[string]string{
@@ -169,15 +199,16 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				})
 		}
 
-		err = deployPools(ctx, client, poolsKv)
-		Expect(err).ToNot(HaveOccurred())
+		return handlerPools, nil
+	}
 
+	waitForPoolsBeReady := func(expectedPools int) {
 		Eventually(func(g Gomega) {
 			daemonSets, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).List(ctx, metav1.ListOptions{})
 			g.Expect(err).ToNot(HaveOccurred())
 
 			poolsCount := 0
-			prefix := fmt.Sprintf("%s-%s", virtHandlerName, "pool")
+			prefix := fmt.Sprintf("%s-%s", virtHandlerName, poolNamePrefix)
 			for _, ds := range daemonSets.Items {
 				if !strings.HasPrefix(ds.Name, prefix) {
 					continue
@@ -187,8 +218,21 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				poolsCount += 1
 			}
 
-			g.Expect(poolsCount).To(BeNumerically("==", len(poolsKv.Spec.HandlerPools)))
+			g.Expect(poolsCount).To(BeNumerically("==", expectedPools))
 		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler pools to be ready")
+	}
+
+	It("should successfully deploy", func() {
+		var err error
+
+		poolsKv := libkubevirt.GetCurrentKv(client).DeepCopy()
+		poolsKv.Spec.HandlerPools, err = generatePools(ctx, client)
+		Expect(err).ToNot(HaveOccurred())
+
+		err = deployPools(ctx, client, poolsKv)
+		Expect(err).ToNot(HaveOccurred())
+
+		waitForPoolsBeReady(len(poolsKv.Spec.HandlerPools))
 
 		Eventually(func(g Gomega) {
 			_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
