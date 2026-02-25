@@ -28,6 +28,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -36,6 +38,7 @@ import (
 
 	k6tv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
+
 	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 	kvconfig "kubevirt.io/kubevirt/tests/libkubevirt/config"
 
@@ -52,15 +55,18 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	)
 
 	var (
-		originalKV *k6tv1.KubeVirt
-		client     kubecli.KubevirtClient
-		ctx        context.Context
+		originalConfig k6tv1.KubeVirtConfiguration
+
+		client kubecli.KubevirtClient
+		ctx    context.Context
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		client = kubevirt.Client()
-		originalKV = libkubevirt.GetCurrentKv(client)
+
+		kv := libkubevirt.GetCurrentKv(client)
+		originalConfig = *kv.Spec.Configuration.DeepCopy()
 
 		kvconfig.EnableFeatureGate(featuregate.HandlerPoolsGate)
 
@@ -75,14 +81,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	})
 
 	AfterEach(func() {
-		_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
-		if err == nil {
-			// We have skipped the test. Do nothing.
-			return
-		}
-
-		_, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, originalKV, metav1.UpdateOptions{})
-		Expect(err).ToNot(HaveOccurred())
+		kvconfig.UpdateKubeVirtConfigValueAndWait(originalConfig)
 
 		patch := []byte(fmt.Sprintf(`[{"op": "remove", "path":"/metadata/labels/%s"}]`, poolSelectorLabelName))
 		nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -137,27 +136,11 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 
 		for i, pool := range kb.Spec.HandlerPools {
-			n := nodes[i].DeepCopy()
-			if n.Labels == nil {
-				n.Labels = make(map[string]string)
-			}
-
-			n.Labels[poolSelectorLabelName] = pool.Name
-			n, err = client.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{})
+			patch := []byte(fmt.Sprintf(`[{"op": "add", "path":"/metadata/labels/%s", "value": "%s"}]`, poolSelectorLabelName, pool.Name))
+			_, err = client.CoreV1().Nodes().Patch(ctx, nodes[i].Name, types.JSONPatchType, patch, metav1.PatchOptions{})
 			if err != nil {
 				return err
 			}
-
-			n, err := client.CoreV1().Nodes().Get(ctx, n.Name, metav1.GetOptions{})
-			if err != nil {
-				return err
-			}
-
-			if value, found := n.Labels[poolSelectorLabelName]; !found || value != pool.Name {
-				return fmt.Errorf("failed to update %s labels", n.Name)
-			}
-
-			nodes[i] = n
 		}
 
 		_, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kb, metav1.UpdateOptions{})
@@ -168,11 +151,11 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		return nil
 	}
 
-	It("should successfully deploy several virt-handler pools", decorators.RequiresTwoSchedulableNodes, func() {
+	It("should successfully deploy several virt-handler pools", func() {
 		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
-		poolsKv := originalKV.DeepCopy()
+		poolsKv := libkubevirt.GetCurrentKv(client).DeepCopy()
 		poolsKv.Spec.HandlerPools = make([]k6tv1.HandlerPoolConfig, 0, ds.Status.NumberReady)
 
 		for i := range ds.Status.NumberReady {
@@ -199,11 +182,18 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				if !strings.HasPrefix(ds.Name, prefix) {
 					continue
 				}
+				g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
 				g.Expect(ds.Status.DesiredNumberScheduled).To(Equal(ds.Status.NumberReady))
 				poolsCount += 1
 			}
 
 			g.Expect(poolsCount).To(BeNumerically("==", len(poolsKv.Spec.HandlerPools)))
 		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler pools to be ready")
+
+		Eventually(func(g Gomega) {
+			_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), fmt.Sprintf("expected daemonset %q to be deleted, got err=%v", virtHandlerName, err))
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler daemonset to be deleted")
 	})
 })
