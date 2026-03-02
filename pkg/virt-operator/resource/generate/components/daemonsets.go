@@ -119,40 +119,7 @@ func NewHandlerDaemonSet(
 	}
 	podTemplateSpec.Annotations["openshift.io/required-scc"] = "kubevirt-handler"
 
-	if config.HandlerPoolsEnabled() && pool != nil {
-		podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
-		if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
-			podTemplateSpec.Spec.NodeSelector = make(map[string]string)
-		}
-		for k, v := range pool.NodeSelector {
-			podTemplateSpec.Spec.NodeSelector[k] = v
-		}
-
-		var antiAffinity []corev1.PodAffinityTerm
-		for _, otherPool := range config.HandlerPools {
-			if otherPool.Name == pool.Name {
-				continue
-			}
-			antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
-				LabelSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						virtv1.AppLabel:  VirtHandlerName,
-						handlerPoolLabel: otherPool.Name,
-					},
-				},
-				TopologyKey: "kubernetes.io/hostname",
-			})
-		}
-		if podTemplateSpec.Spec.Affinity == nil {
-			podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
-		}
-		if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
-			podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
-		}
-
-		podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
-		podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
-	}
+	setVirtHandlerAffinity(config, pool, podTemplateSpec)
 
 	daemonset := &appsv1.DaemonSet{
 		TypeMeta: metav1.TypeMeta{
@@ -463,4 +430,119 @@ func NewHandlerDaemonSet(
 	}
 	return daemonset
 
+}
+
+func setVirtHandlerAffinity(
+	config *operatorutil.KubeVirtDeploymentConfig,
+	pool *operatorutil.HandlerPoolConfig,
+	podTemplateSpec *corev1.PodTemplateSpec,
+) {
+	if !config.HandlerPoolsEnabled() || len(config.HandlerPools) == 0 {
+		return
+	}
+
+	if pool != nil {
+		podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
+		if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
+			podTemplateSpec.Spec.NodeSelector = make(map[string]string)
+		}
+		for k, v := range pool.NodeSelector {
+			podTemplateSpec.Spec.NodeSelector[k] = v
+		}
+
+		var antiAffinity []corev1.PodAffinityTerm
+		for _, otherPool := range config.HandlerPools {
+			if otherPool.Name == pool.Name {
+				continue
+			}
+			antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						virtv1.AppLabel:  VirtHandlerName,
+						handlerPoolLabel: otherPool.Name,
+					},
+				},
+				TopologyKey: "kubernetes.io/hostname",
+			})
+		}
+		if podTemplateSpec.Spec.Affinity == nil {
+			podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+		}
+		if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+			podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
+		}
+
+		podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
+		podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
+		return
+	}
+
+	exclusionTerms := excludeHandlerPoolsTermsForDefaultHandler(config.HandlerPools)
+	applyDefaultHandlerExclusionTerms(podTemplateSpec, exclusionTerms)
+}
+
+func excludeHandlerPoolsTermsForDefaultHandler(pools []operatorutil.HandlerPoolConfig) []corev1.NodeSelectorTerm {
+	terms := []corev1.NodeSelectorTerm{{}}
+
+	for _, p := range pools {
+		// NOT(pool) = OR over key!=value
+		disj := make([]corev1.NodeSelectorTerm, 0, len(p.NodeSelector))
+		for k, v := range p.NodeSelector {
+			disj = append(disj, corev1.NodeSelectorTerm{
+				MatchExpressions: []corev1.NodeSelectorRequirement{{
+					Key:      k,
+					Operator: corev1.NodeSelectorOpNotIn,
+					Values:   []string{v},
+				}},
+			})
+		}
+
+		terms = andNodeSelectorTerms(terms, disj)
+	}
+
+	return terms
+}
+
+func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
+	out := make([]corev1.NodeSelectorTerm, 0, len(firstList)*len(secondList))
+	for _, ta := range firstList {
+		for _, tb := range secondList {
+			combined := corev1.NodeSelectorTerm{
+				MatchExpressions: make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchExpressions)+len(tb.MatchExpressions)),
+				MatchFields:      make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchFields)+len(tb.MatchFields)),
+			}
+			combined.MatchExpressions = append(combined.MatchExpressions, ta.MatchExpressions...)
+			combined.MatchExpressions = append(combined.MatchExpressions, tb.MatchExpressions...)
+			combined.MatchFields = append(combined.MatchFields, ta.MatchFields...)
+			combined.MatchFields = append(combined.MatchFields, tb.MatchFields...)
+			out = append(out, combined)
+		}
+	}
+	return out
+}
+
+func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, exclusionTerms []corev1.NodeSelectorTerm) {
+	if len(exclusionTerms) == 0 {
+		// No valid exclusion expression -> keep current behavior unchanged.
+		return
+	}
+
+	if podTemplateSpec.Spec.Affinity == nil {
+		podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+	}
+	if podTemplateSpec.Spec.Affinity.NodeAffinity == nil {
+		podTemplateSpec.Spec.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+
+	required := podTemplateSpec.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil || len(required.NodeSelectorTerms) == 0 {
+		podTemplateSpec.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{
+			NodeSelectorTerms: exclusionTerms,
+		}
+		return
+	}
+
+	// Existing required terms ORed with each other; exclusionTerms are also ORed.
+	// To enforce BOTH sets, build cartesian product (AND semantics).
+	required.NodeSelectorTerms = andNodeSelectorTerms(required.NodeSelectorTerms, exclusionTerms)
 }
