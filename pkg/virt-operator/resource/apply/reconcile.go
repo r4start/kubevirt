@@ -644,14 +644,16 @@ func (r *Reconciler) createOrRollBackSystem(apiDeploymentsRolledOver bool) (bool
 	}
 
 	// create/update Daemonsets
+	allDone := true
 	for _, daemonSet := range r.targetStrategy.DaemonSets() {
 		finished, err := r.syncDaemonSet(daemonSet)
-		if !finished || err != nil {
+		if err != nil {
 			return false, err
 		}
+		allDone = allDone && finished
 	}
 
-	return true, nil
+	return allDone, nil
 }
 
 func (r *Reconciler) deleteDeployment(deployment *appsv1.Deployment) error {

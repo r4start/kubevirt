@@ -20,6 +20,7 @@
 package util
 
 import (
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,6 +28,7 @@ import (
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
+	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 )
 
 func DaemonsetIsReady(kv *v1.KubeVirt, daemonset *appsv1.DaemonSet, stores Stores) bool {
@@ -40,9 +42,15 @@ func DaemonsetIsReady(kv *v1.KubeVirt, daemonset *appsv1.DaemonSet, stores Store
 		return false
 	}
 
-	if daemonset.Status.DesiredNumberScheduled == 0 ||
-		daemonset.Status.DesiredNumberScheduled != daemonset.Status.NumberReady {
+	if daemonset.Status.DesiredNumberScheduled == 0 {
+		isReady := IsVirtHandlerReady(kv, stores, daemonset)
+		if !isReady {
+			log.Log.V(4).Infof("DaemonSet %v not ready yet", daemonset.Name)
+		}
+		return isReady
+	}
 
+	if daemonset.Status.DesiredNumberScheduled != daemonset.Status.NumberReady {
 		log.Log.V(4).Infof("DaemonSet %v not ready yet", daemonset.Name)
 		return false
 	}
@@ -191,4 +199,34 @@ func PodIsCrashLooping(pod *k8sv1.Pod) bool {
 	}
 
 	return haveContainersCrashed(pod.Status.ContainerStatuses)
+}
+
+func IsVirtHandlerReady(kv *v1.KubeVirt, stores Stores, daemonset *appsv1.DaemonSet) bool {
+	const virtHandlerDaemonSetNamePrefix = "virt-handler"
+
+	if kv == nil || daemonset == nil {
+		return false
+	}
+
+	if !strings.HasPrefix(daemonset.Name, virtHandlerDaemonSetNamePrefix) || len(kv.Spec.HandlerPools) == 0 {
+		return false
+	}
+
+	devConfig := kv.Spec.Configuration.DeveloperConfiguration
+	if devConfig == nil || !slices.Contains(devConfig.FeatureGates, featuregate.HandlerPoolsGate) {
+		return false
+	}
+
+	for _, obj := range stores.DaemonSetCache.List() {
+		ds, ok := obj.(*appsv1.DaemonSet)
+		if !ok || ds.Name == daemonset.Name || !strings.HasPrefix(ds.Name, virtHandlerDaemonSetNamePrefix) {
+			continue
+		}
+		hasReadyPods := ds.Status.DesiredNumberScheduled > 0 &&
+			ds.Status.DesiredNumberScheduled == ds.Status.NumberReady
+		if hasReadyPods && DaemonSetIsUpToDate(kv, ds) {
+			return true
+		}
+	}
+	return false
 }
