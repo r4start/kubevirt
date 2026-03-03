@@ -226,6 +226,21 @@ func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonS
 
 	switch {
 	case updatedAndReadyPods == 0:
+		if desiredReadyPods == 0 &&
+			util.IsVirtHandlerReady(r.kv, r.stores, cachedDaemonSet) {
+			if !isDaemonSetUpdated {
+				patchedDS, err := r.patchDaemonSet(cachedDaemonSet, newDS)
+				if err != nil {
+					return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), CanaryUpgradeStatusFailed
+				}
+				SetGeneration(&r.kv.Status.Generations, patchedDS)
+			} else {
+				SetGeneration(&r.kv.Status.Generations, cachedDaemonSet)
+			}
+
+			return true, nil, CanaryUpgradeStatusSuccessful
+		}
+
 		if !isDaemonSetUpdated {
 			// start canary upgrade
 			setMaxUnavailable(newDS, daemonSetDefaultMaxUnavailable)
