@@ -238,12 +238,37 @@ func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonS
 		// canary can progress through Increasing and Successful.
 		return false, nil, started
 	case updatedAndReadyPods == 0:
-		// check for a crashed canary pod
-		canaryPods := r.getCanaryPods(cachedDaemonSet)
-		for _, canary := range canaryPods {
-			if canary != nil && util.PodIsCrashLooping(canary) {
-				r.recorder.Eventf(cachedDaemonSet, corev1.EventTypeWarning, failedUpdateDaemonSetReason, "daemonSet %v rollout failed", cachedDaemonSet.Name)
-				return false, fmt.Errorf("daemonSet %s rollout failed", cachedDaemonSet.Name), failed
+		if desiredReadyPods == 0 &&
+			util.IsVirtHandlerReady(r.kv, r.stores, cachedDaemonSet) {
+			if !isDaemonSetUpdated {
+				patchedDS, err := r.patchDaemonSet(cachedDaemonSet, newDS)
+				if err != nil {
+					return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), CanaryUpgradeStatusFailed
+				}
+				SetGeneration(&r.kv.Status.Generations, patchedDS)
+			} else {
+				SetGeneration(&r.kv.Status.Generations, cachedDaemonSet)
+			}
+
+			return true, nil, CanaryUpgradeStatusSuccessful
+		}
+
+		if !isDaemonSetUpdated {
+			// start canary upgrade
+			setMaxUnavailable(newDS, daemonSetDefaultMaxUnavailable)
+			_, err := r.patchDaemonSet(cachedDaemonSet, newDS)
+			if err != nil {
+				return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), CanaryUpgradeStatusFailed
+			}
+			log.V(2).Infof("daemonSet %v started upgrade", newDS.GetName())
+		} else {
+			// check for a crashed canary pod
+			canaryPods := r.getCanaryPods(cachedDaemonSet)
+			for _, canary := range canaryPods {
+				if canary != nil && util.PodIsCrashLooping(canary) {
+					r.recorder.Eventf(cachedDaemonSet, corev1.EventTypeWarning, failedUpdateDaemonSetReason, "daemonSet %v rollout failed", cachedDaemonSet.Name)
+					return false, fmt.Errorf("daemonSet %s rollout failed", cachedDaemonSet.Name), CanaryUpgradeStatusFailed
+				}
 			}
 		}
 		return false, nil, canary
