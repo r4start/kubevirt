@@ -71,14 +71,9 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		ctx    context.Context
 	)
 
-	generatePools := func(ctx context.Context, client kubecli.KubevirtClient) ([]k6tv1.HandlerPoolConfig, error) {
-		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
-		if err != nil {
-			return nil, err
-		}
-
-		handlerPools := make([]k6tv1.HandlerPoolConfig, 0, ds.Status.NumberReady)
-		for i := range ds.Status.NumberReady {
+	generatePools := func(ctx context.Context, client kubecli.KubevirtClient, poolsCount int) ([]k6tv1.HandlerPoolConfig, error) {
+		handlerPools := make([]k6tv1.HandlerPoolConfig, 0, poolsCount)
+		for i := range poolsCount {
 			poolName := fmt.Sprintf("%s-%d", poolNamePrefix, i)
 			handlerPools = append(handlerPools,
 				k6tv1.HandlerPoolConfig{
@@ -90,6 +85,17 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 
 		return handlerPools, nil
+	}
+
+	setNodesLabels := func(ctx context.Context, client kubecli.KubevirtClient, kv *k6tv1.KubeVirt, nodes []*corev1.Node) error {
+		for i, pool := range kv.Spec.HandlerPools {
+			patch := []byte(fmt.Sprintf(`{"metadata": {"labels":{"%s": "%s"}}}`, poolSelectorLabelName, pool.Name))
+			_, err := client.CoreV1().Nodes().Patch(ctx, nodes[i].Name, types.MergePatchType, patch, metav1.PatchOptions{})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	waitForPoolsBeReady := func(expectedPools int) {
@@ -113,10 +119,18 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	}
 
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) ([]k6tv1.HandlerPoolConfig, error) {
-		var err error
+		kv := libkubevirt.GetCurrentKv(client)
+		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
 
-		kb := libkubevirt.GetCurrentKv(client).DeepCopy()
-		kb.Spec.HandlerPools, err = generatePools(ctx, client)
+		if ds.Status.NumberReady <= 1 {
+			return nil, errors.New("can't deploy virt-handler pools. not enough capacity")
+		}
+
+		poolsCount := int(ds.Status.DesiredNumberScheduled)
+		kv.Spec.HandlerPools, err = generatePools(ctx, client, poolsCount)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +142,11 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		// Get eligible nodes for virt-handlers
 		nodes := make([]*corev1.Node, 0, len(nodesList.Items))
-		for _, node := range nodesList.Items {
+		seen := make(map[string]struct{}, len(nodesList.Items))
+
+		for i := range nodesList.Items {
+			node := &nodesList.Items[i]
+
 			podsSelector := fields.AndSelectors(
 				fields.OneTermEqualSelector("spec.nodeName", node.Name),
 				fields.OneTermEqualSelector("status.phase", string(corev1.PodRunning)),
@@ -140,10 +158,17 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				return nil, err
 			}
 
+			hasVirtHandler := false
 			for _, pod := range podList.Items {
-				if strings.HasPrefix(pod.Name, "virt-handler") {
-					nodes = append(nodes, &node)
+				if strings.HasPrefix(pod.Name, virtHandlerName) {
+					hasVirtHandler = true
+					break
 				}
+			}
+
+			if _, found := seen[node.Name]; hasVirtHandler && !found {
+				seen[node.Name] = struct{}{}
+				nodes = append(nodes, node)
 			}
 		}
 
@@ -151,25 +176,20 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
 		}
 
-		if len(nodes) < len(kb.Spec.HandlerPools) {
-			return nil, fmt.Errorf("not enough nodes with running virt-handler for the test; have %d; required %d",
-				len(nodesList.Items), len(kb.Spec.HandlerPools))
+		if len(nodes) < poolsCount {
+			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), poolsCount)
 		}
 
-		for i, pool := range kb.Spec.HandlerPools {
-			patch := []byte(fmt.Sprintf(`[{"op": "add", "path":"/metadata/labels/%s", "value": "%s"}]`, poolSelectorLabelName, pool.Name))
-			_, err = client.CoreV1().Nodes().Patch(ctx, nodes[i].Name, types.JSONPatchType, patch, metav1.PatchOptions{})
-			if err != nil {
-				return nil, err
-			}
+		if err := setNodesLabels(ctx, client, kv, nodes); err != nil {
+			return nil, err
 		}
 
-		_, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kb, metav1.UpdateOptions{})
+		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
 		if err != nil {
 			return nil, err
 		}
 
-		return kb.Spec.HandlerPools, nil
+		return kv.Spec.HandlerPools, nil
 	}
 
 	removePools := func(ctx context.Context, client kubecli.KubevirtClient) {
@@ -273,10 +293,11 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		waitForPoolsBeReady(len(pools))
 
 		Eventually(func(g Gomega) {
-			_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), fmt.Sprintf("expected daemonset %q to be deleted, got err=%v", virtHandlerName, err))
-		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler daemonset to be deleted")
+			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(ds.Status.DesiredNumberScheduled).To(BeZero())
+			g.Expect(ds.Status.NumberReady).To(BeZero())
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler daemonset to be updated")
 	})
 
 	It("should not break a running VMI", func() {
