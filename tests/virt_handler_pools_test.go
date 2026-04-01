@@ -90,6 +90,24 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for virt-handler pools to be ready")
 	}
 
+	updateNodesLabels := func(ctx context.Context, client kubecli.KubevirtClient, kv *k6tv1.KubeVirt, nodes []*corev1.Node) error {
+		nodesLabels, err := setNodesLabels(ctx, client, kv, nodes)
+		DeferCleanup(func() {
+			for nodeName, labelKeys := range nodesLabels {
+				var labelStr []string
+				for _, k := range labelKeys {
+					labelStr = append(labelStr, fmt.Sprintf(`"%s":null`, k))
+				}
+				patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStr, ",")))
+				_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			}
+
+			nodesLabels = nil
+		})
+		return err
+	}
+
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) ([]k6tv1.HandlerPoolConfig, error) {
 		kv := libkubevirt.GetCurrentKv(client)
 		poolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
@@ -118,21 +136,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), poolsCount)
 		}
 
-		nodesLabels, err := setNodesLabels(ctx, client, kv, nodes)
-		DeferCleanup(func() {
-			for nodeName, labelKeys := range nodesLabels {
-				var labelStr []string
-				for _, k := range labelKeys {
-					labelStr = append(labelStr, fmt.Sprintf(`"%s":null`, k))
-				}
-				patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStr, ",")))
-				_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
-				Expect(err).ToNot(HaveOccurred())
-			}
-
-			nodesLabels = nil
-		})
-
+		err = updateNodesLabels(ctx, client, kv, nodes)
 		if err != nil {
 			return nil, err
 		}
@@ -145,6 +149,38 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 
 		return kv.Spec.HandlerPools, nil
+	}
+
+	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools []k6tv1.HandlerPoolConfig) (*k6tv1.KubeVirt, error) {
+		kv := libkubevirt.GetCurrentKv(client)
+		kv.Spec.HandlerPools = pools
+
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(nodes) == 0 {
+			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
+		}
+
+		if len(nodes) < len(kv.Spec.HandlerPools) {
+			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools))
+		}
+
+		err = updateNodesLabels(ctx, client, kv, nodes)
+		if err != nil {
+			return nil, err
+		}
+
+		enableHandlerPools(kv)
+
+		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, err
+		}
+
+		return kv, nil
 	}
 
 	removePools := func(ctx context.Context, client kubecli.KubevirtClient) {
@@ -295,31 +331,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		pools[0].NodeSelector[secondLabel] = ""
 
-		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(len(nodes)).To(BeNumerically(">=", len(pools)))
-
-		kv := libkubevirt.GetCurrentKv(client)
-		enableHandlerPools(kv)
-		kv.Spec.HandlerPools = pools
-
-		nodesLabels, err := setNodesLabels(ctx, client, kv, nodes)
-		DeferCleanup(func() {
-			for nodeName, labelKeys := range nodesLabels {
-				var labelStr []string
-				for _, k := range labelKeys {
-					labelStr = append(labelStr, fmt.Sprintf(`"%s":null`, k))
-				}
-				patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStr, ",")))
-				_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
-				Expect(err).ToNot(HaveOccurred())
-			}
-
-			nodesLabels = nil
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+		kv, err := deploySpecificPools(ctx, client, pools)
 		Expect(err).ToNot(HaveOccurred())
 
 		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
@@ -396,6 +408,98 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 
 		Expect(poolsCount + 1).To(BeNumerically("==", seenVirtHandlers)) // pools + one default
+	})
+
+	It("should use custom image and tag", func() {
+		if flags.KubeVirtVersionTagAlt == "" {
+			Skip("alt tag is not specified, but required for this test")
+		}
+
+		By("deploying pools")
+		maxPoolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(maxPoolsCount).To(BeNumerically(">", 1))
+
+		pools, err := generatePools(maxPoolsCount, poolNamePrefix, poolSelectorLabelName)
+		Expect(err).ToNot(HaveOccurred())
+
+		ds, err := client.AppsV1().
+			DaemonSets(flags.KubeVirtInstallNamespace).
+			Get(ctx, virtHandlerName, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		virtHandlerContainer := findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+		Expect(virtHandlerContainer).ToNot(BeNil())
+
+		// Container image format: [registry/]image[:tag][@digest]
+		// Example: some-cr.com/image:tag@sha256:abc
+		// All parts are optional except the image name.
+		// Steps to modify the image tag:
+		// 1. Split by '/' to separate a registry path from repository and version info (e.g., "image:tag@sha256:abc").
+		// 2. Split by '@' to separate the tag part from digest (e.g., "image:tag" and "sha256:abc"). Discard digest since we're changing the tag.
+		// 3. Split by ':' to separate the repository from the tag (e.g., "image" and "tag"), then replace with the alternate tag.
+		// 4. Reconstruct the full image reference.
+		defaultImage := virtHandlerContainer.Image
+		imageParts := strings.Split(virtHandlerContainer.Image, "/")
+		partsCount := len(imageParts)
+		Expect(partsCount).To(BeNumerically(">", 0))
+
+		// Hashed version.
+		image := imageParts[partsCount-1]
+		imageParts = imageParts[:partsCount-1]
+
+		imageTagVersionParts := strings.Split(image, "@")
+		imageTagVersionPartsLen := len(imageTagVersionParts)
+		Expect(imageTagVersionPartsLen).To(BeElementOf([]int{1, 2}))
+
+		tagVersion := strings.Split(imageTagVersionParts[0], ":")
+		tagVersionLen := len(tagVersion)
+		Expect(tagVersionLen).To(BeElementOf([]int{1, 2}))
+
+		// There is only image name.
+		if tagVersionLen == 2 {
+			tagVersion = tagVersion[:1]
+		}
+		tagVersion = append(tagVersion, flags.KubeVirtVersionTagAlt)
+
+		imageWithAltTag := strings.Join(tagVersion, ":")
+		imageParts = append(imageParts, imageWithAltTag)
+
+		pools[0].VirtHandlerImage = strings.Join(imageParts, "/")
+
+		kv, err := deploySpecificPools(ctx, client, pools)
+		Expect(err).ToNot(HaveOccurred())
+
+		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
+
+		ds, err = client.AppsV1().
+			DaemonSets(flags.KubeVirtInstallNamespace).
+			Get(ctx, fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name), metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		virtHandlerContainer = findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+		Expect(virtHandlerContainer).ToNot(BeNil())
+		Expect(virtHandlerContainer.Image).To(BeIdenticalTo(pools[0].VirtHandlerImage))
+
+		dsList, err := client.AppsV1().
+			DaemonSets(flags.KubeVirtInstallNamespace).
+			List(
+				ctx,
+				metav1.ListOptions{
+					LabelSelector: "kubevirt.io=" + virtHandlerName,
+				},
+			)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(dsList.Items).To(HaveLen(maxPoolsCount + 1))
+
+		customImagePoolName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		for _, ds := range dsList.Items {
+			if ds.Name == customImagePoolName {
+				continue
+			}
+			virtHandlerContainer = findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+			Expect(virtHandlerContainer).ToNot(BeNil())
+			Expect(virtHandlerContainer.Image).To(BeIdenticalTo(defaultImage))
+		}
 	})
 })
 
@@ -526,4 +630,14 @@ func enableHandlerPools(kv *k6tv1.KubeVirt) {
 
 	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates =
 		append(kv.Spec.Configuration.DeveloperConfiguration.FeatureGates, featuregate.HandlerPoolsGate)
+}
+
+func findContainerByName(containers []corev1.Container, name string) *corev1.Container {
+	for i, container := range containers {
+		if container.Name != name {
+			continue
+		}
+		return &containers[i]
+	}
+	return nil
 }
