@@ -76,21 +76,16 @@ func NewHandlerDaemonSet(
 ) *appsv1.DaemonSet {
 	var (
 		deploymentName string
-		imageName      = fmt.Sprintf("%s%s", config.GetImagePrefix(), VirtHandlerName)
+		image          = config.GetHandlerImage()
 	)
 
 	if config.HandlerPoolsEnabled() && pool != nil {
 		deploymentName = fmt.Sprintf("%s-%s", VirtHandlerName, pool.Name)
 		if pool.VirtHandlerImage != "" {
-			imageName = pool.VirtHandlerImage
+			image = pool.VirtHandlerImage
 		}
 	} else {
 		deploymentName = VirtHandlerName
-	}
-
-	image := config.GetHandlerImage()
-	if config.HandlerPoolsEnabled() && pool != nil && pool.VirtHandlerImage != "" && config.VirtHandlerImage == "" {
-		image = fmt.Sprintf("%s/%s%s", config.GetImageRegistry(), imageName, AddVersionSeparatorPrefix(config.GetHandlerVersion()))
 	}
 
 	env := operatorutil.NewEnvVarMap(config.GetExtraEnv())
