@@ -501,6 +501,287 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			Expect(virtHandlerContainer.Image).To(BeIdenticalTo(defaultImage))
 		}
 	})
+
+	It("should add a pool to an existing pool configuration", func() {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		if len(nodes) < 3 {
+			Skip("test requires at least 3 nodes with virt-handler")
+		}
+
+		By("deploying initial pools leaving one node for default handler")
+		initialPoolCount := len(nodes) - 1
+		pools, err := generatePools(initialPoolCount, poolNamePrefix, poolSelectorLabelName)
+		Expect(err).ToNot(HaveOccurred())
+
+		kv, err := deploySpecificPools(ctx, client, pools)
+		Expect(err).ToNot(HaveOccurred())
+		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
+		waitForPoolsBeReady(initialPoolCount)
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, virtHandlerName, 1)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		By("running a VMI before adding new pool")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("finding the default handler node")
+		defaultNodeName, err := findDefaultHandlerNode(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(defaultNodeName).ToNot(BeEmpty(), "could not find a node running default virt-handler")
+
+		By("adding a new pool targeting the default handler's node")
+		newPoolName := fmt.Sprintf("%s-%d", poolNamePrefix, initialPoolCount)
+		newPool := k6tv1.HandlerPoolConfig{
+			Name: newPoolName,
+			NodeSelector: map[string]string{
+				poolSelectorLabelName: newPoolName,
+			},
+		}
+
+		Expect(patchNodeLabels(ctx, client, defaultNodeName, map[string]string{poolSelectorLabelName: newPoolName})).To(Succeed())
+		DeferCleanup(func() {
+			Expect(removeNodeLabels(ctx, client, defaultNodeName, []string{poolSelectorLabelName})).To(Succeed())
+		})
+
+		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
+			kv.Spec.HandlerPools = append(kv.Spec.HandlerPools, newPool)
+		})).To(Succeed())
+
+		By("waiting for all pools including the new one to be ready")
+		waitForPoolsBeReady(initialPoolCount + 1)
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, virtHandlerName, 0)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("verifying VMI survived pool addition")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
+
+	It("should remove a single pool while preserving others", func() {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		if len(nodes) < 3 {
+			Skip("test requires at least 3 nodes with virt-handler")
+		}
+
+		By("deploying pools for all nodes")
+		pools, err := deployPools(ctx, client)
+		Expect(err).ToNot(HaveOccurred())
+		waitForPoolsBeReady(len(pools))
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, virtHandlerName, 0)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		By("running a VMI")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("removing the first pool from configuration")
+		removedPoolName := pools[0].Name
+		removedPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, removedPoolName)
+
+		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
+			kv.Spec.HandlerPools = slices.DeleteFunc(kv.Spec.HandlerPools, func(p k6tv1.HandlerPoolConfig) bool {
+				return p.Name == removedPoolName
+			})
+		})).To(Succeed())
+
+		By("waiting for removed pool's daemonset to be deleted")
+		Eventually(func() error {
+			return checkDSDeleted(ctx, client, removedPoolDSName)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		By("verifying default handler picked up the freed node")
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, virtHandlerName, 1)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		By("verifying remaining pools are still operational")
+		waitForPoolsBeReady(len(pools) - 1)
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("verifying VMI survived pool removal")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
+
+	It("should handle node re-labeling between pools", func() {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		if len(nodes) < 3 {
+			Skip("test requires at least 3 nodes with virt-handler")
+		}
+
+		By("deploying pools leaving one node for default handler")
+		poolsCount := len(nodes) - 1
+		pools, err := generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
+		Expect(err).ToNot(HaveOccurred())
+
+		kv, err := deploySpecificPools(ctx, client, pools)
+		Expect(err).ToNot(HaveOccurred())
+		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
+		waitForPoolsBeReady(poolsCount)
+
+		By("running a VMI")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("finding the node assigned to pool-0")
+		pool0LabelValue := pools[0].NodeSelector[poolSelectorLabelName]
+		pool1LabelValue := pools[1].NodeSelector[poolSelectorLabelName]
+
+		pool0NodeName, err := findNodeWithLabel(ctx, client, poolSelectorLabelName, pool0LabelValue)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pool0NodeName).ToNot(BeEmpty(), "could not find node assigned to pool-0")
+
+		By("re-labeling node from pool-0 to pool-1")
+		Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool1LabelValue})).To(Succeed())
+		DeferCleanup(func() {
+			Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool0LabelValue})).To(Succeed())
+		})
+
+		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		pool1DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[1].Name)
+
+		By("waiting for pool-0 to scale down and pool-1 to scale up")
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, pool0DSName, 0)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+		Eventually(func() error {
+			return checkDSStatus(ctx, client, pool1DSName, 2)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("verifying VMI survived re-labeling")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
+
+	It("should update a pool's image while VMIs are running", func() {
+		if flags.KubeVirtVersionTagAlt == "" {
+			Skip("alt tag is not specified, but required for this test")
+		}
+
+		By("deploying pools")
+		pools, err := deployPools(ctx, client)
+		Expect(err).ToNot(HaveOccurred())
+		waitForPoolsBeReady(len(pools))
+
+		By("running a VMI")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("getting current virt-handler image from pool-0")
+		targetPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, targetPoolDSName, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		virtHandlerContainer := findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+		Expect(virtHandlerContainer).ToNot(BeNil())
+		originalImage := virtHandlerContainer.Image
+		altImage := replaceImageTag(originalImage, flags.KubeVirtVersionTagAlt)
+
+		By("updating pool-0 with custom image")
+		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
+			for i := range kv.Spec.HandlerPools {
+				if kv.Spec.HandlerPools[i].Name == pools[0].Name {
+					kv.Spec.HandlerPools[i].VirtHandlerImage = altImage
+					break
+				}
+			}
+		})).To(Succeed())
+
+		By("waiting for pool-0 DS to roll out with new image")
+		Eventually(func(g Gomega) {
+			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, targetPoolDSName, metav1.GetOptions{})
+			g.Expect(err).ToNot(HaveOccurred())
+			container := findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+			g.Expect(container).ToNot(BeNil())
+			g.Expect(container.Image).To(Equal(altImage))
+			g.Expect(ds.Status.DesiredNumberScheduled).To(Equal(ds.Status.NumberReady))
+			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for pool-0 DS to update image")
+
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("verifying other pool DSes still use default image")
+		for _, pool := range pools[1:] {
+			poolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pool.Name)
+			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, poolDSName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			container := findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
+			Expect(container).ToNot(BeNil())
+			Expect(container.Image).To(Equal(originalImage))
+		}
+
+		By("verifying VMI survived image update")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
+
+	It("should update a pool's node selector", func() {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		if len(nodes) < 3 {
+			Skip("test requires at least 3 nodes with virt-handler")
+		}
+
+		By("deploying pools")
+		pools, err := deployPools(ctx, client)
+		Expect(err).ToNot(HaveOccurred())
+		waitForPoolsBeReady(len(pools))
+
+		By("running a VMI")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("finding the node assigned to pool-0")
+		pool0LabelValue := pools[0].NodeSelector[poolSelectorLabelName]
+		pool0NodeName, err := findNodeWithLabel(ctx, client, poolSelectorLabelName, pool0LabelValue)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pool0NodeName).ToNot(BeEmpty(), "could not find node assigned to pool-0")
+
+		By("re-labeling node with new selector value")
+		const newSelectorValue = "pool-0-updated"
+		Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: newSelectorValue})).To(Succeed())
+		DeferCleanup(func() {
+			Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool0LabelValue})).To(Succeed())
+		})
+
+		By("updating pool-0's node selector in KubeVirt spec")
+		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
+			for i := range kv.Spec.HandlerPools {
+				if kv.Spec.HandlerPools[i].Name == pools[0].Name {
+					kv.Spec.HandlerPools[i].NodeSelector = map[string]string{
+						poolSelectorLabelName: newSelectorValue,
+					}
+					break
+				}
+			}
+		})).To(Succeed())
+
+		By("waiting for pool-0 DS to update with new selector and become ready")
+		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		Eventually(func(g Gomega) {
+			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, pool0DSName, metav1.GetOptions{})
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(ds.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue(poolSelectorLabelName, newSelectorValue))
+			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
+			g.Expect(ds.Status.DesiredNumberScheduled).To(Equal(ds.Status.NumberReady))
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for pool-0 DS to update selector")
+
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("verifying VMI survived selector change")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
 })
 
 func generatePools(
@@ -640,4 +921,116 @@ func findContainerByName(containers []corev1.Container, name string) *corev1.Con
 		return &containers[i]
 	}
 	return nil
+}
+
+func updateKvPools(ctx context.Context, client kubecli.KubevirtClient, updateFn func(kv *k6tv1.KubeVirt)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		kv := libkubevirt.GetCurrentKv(client).DeepCopy()
+		updateFn(kv)
+		_, err := client.KubeVirt(kv.Namespace).Update(ctx, kv, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+func patchNodeLabels(ctx context.Context, client kubecli.KubevirtClient, nodeName string, labels map[string]string) error {
+	var labelStrs []string
+	for k, v := range labels {
+		labelStrs = append(labelStrs, fmt.Sprintf(`"%s":"%s"`, k, v))
+	}
+	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStrs, ",")))
+	_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+func removeNodeLabels(ctx context.Context, client kubecli.KubevirtClient, nodeName string, keys []string) error {
+	var labelStrs []string
+	for _, k := range keys {
+		labelStrs = append(labelStrs, fmt.Sprintf(`"%s":null`, k))
+	}
+	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStrs, ",")))
+	_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+func checkDSStatus(ctx context.Context, client kubecli.KubevirtClient, dsName string, expectedDesired int32) error {
+	ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, dsName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if ds.Status.DesiredNumberScheduled != expectedDesired {
+		return fmt.Errorf("daemonset %s: expected desired=%d, got desired=%d", dsName, expectedDesired, ds.Status.DesiredNumberScheduled)
+	}
+	if ds.Status.NumberReady != expectedDesired {
+		return fmt.Errorf("daemonset %s: expected ready=%d, got ready=%d", dsName, expectedDesired, ds.Status.NumberReady)
+	}
+	return nil
+}
+
+func checkDSDeleted(ctx context.Context, client kubecli.KubevirtClient, dsName string) error {
+	_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, dsName, metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("daemonset %s still exists", dsName)
+	}
+	if k8serrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func findDefaultHandlerNode(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {
+	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	for _, node := range nodesList.Items {
+		pods, err := listRunningPodsOnNode(ctx, client, node.Name)
+		if err != nil {
+			return "", err
+		}
+		for _, pod := range pods {
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "DaemonSet" && ref.Name == virtHandlerName {
+					return node.Name, nil
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+func findNodeWithLabel(ctx context.Context, client kubecli.KubevirtClient, labelKey, labelValue string) (string, error) {
+	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	for _, node := range nodesList.Items {
+		if node.Labels[labelKey] == labelValue {
+			return node.Name, nil
+		}
+	}
+	return "", nil
+}
+
+func replaceImageTag(image string, newTag string) string {
+	imageParts := strings.Split(image, "/")
+	partsCount := len(imageParts)
+
+	nameAndTag := imageParts[partsCount-1]
+	registryParts := imageParts[:partsCount-1]
+
+	// Strip digest if present (format: name:tag@sha256:abc)
+	digestParts := strings.Split(nameAndTag, "@")
+	nameAndTag = digestParts[0]
+
+	// Replace or add tag
+	tagParts := strings.Split(nameAndTag, ":")
+	tagParts = tagParts[:1]
+	tagParts = append(tagParts, newTag)
+
+	nameAndTag = strings.Join(tagParts, ":")
+	registryParts = append(registryParts, nameAndTag)
+
+	return strings.Join(registryParts, "/")
 }
