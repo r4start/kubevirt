@@ -149,7 +149,7 @@ func podIsRunning(pod *k8sv1.Pod) bool {
 }
 
 func podHasNamePrefix(pod *k8sv1.Pod, namePrefix string) bool {
-	return strings.Contains(pod.Name, namePrefix)
+	return strings.HasPrefix(pod.Name, namePrefix)
 }
 
 func PodIsUpToDate(pod *k8sv1.Pod, kv *v1.KubeVirt) bool {
