@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -127,11 +128,9 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		if err != nil {
 			return nil, err
 		}
-
 		if len(nodes) == 0 {
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
 		}
-
 		if len(nodes) < poolsCount {
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), poolsCount)
 		}
@@ -159,17 +158,14 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		if err != nil {
 			return nil, err
 		}
-
 		if len(nodes) == 0 {
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
 		}
-
 		if len(nodes) < len(kv.Spec.HandlerPools) {
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools))
 		}
 
-		err = updateNodesLabels(ctx, client, kv, nodes)
-		if err != nil {
+		if err := updateNodesLabels(ctx, client, kv, nodes); err != nil {
 			return nil, err
 		}
 
@@ -519,7 +515,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
 		waitForPoolsBeReady(initialPoolCount)
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, virtHandlerName, 1)
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, 1)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		By("running a VMI before adding new pool")
@@ -552,7 +548,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("waiting for all pools including the new one to be ready")
 		waitForPoolsBeReady(initialPoolCount + 1)
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, virtHandlerName, 0)
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
@@ -574,7 +570,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 		waitForPoolsBeReady(len(pools))
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, virtHandlerName, 0)
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		By("running a VMI")
@@ -592,13 +588,15 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		})).To(Succeed())
 
 		By("waiting for removed pool's daemonset to be deleted")
-		Eventually(func() error {
-			return checkDSDeleted(ctx, client, removedPoolDSName)
-		}, 240*time.Second, 1*time.Second).Should(Succeed())
+		Eventually(func(g Gomega) bool {
+			deleted, err := isDaemonSetDeleted(ctx, client, removedPoolDSName)
+			g.Expect(err).ToNot(HaveOccurred())
+			return deleted
+		}, 240*time.Second, 1*time.Second).Should(BeTrue())
 
 		By("verifying default handler picked up the freed node")
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, virtHandlerName, 1)
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, 1)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		By("verifying remaining pools are still operational")
@@ -606,6 +604,86 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
 		By("verifying VMI survived pool removal")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+	})
+
+	It("should not expose any node to dual virt-handler coverage during pool removal", func() {
+		var (
+			violations []string
+			mu         sync.Mutex
+			wg         sync.WaitGroup
+		)
+
+		By("deploying pools for all nodes")
+		pools, err := deployPools(ctx, client)
+		Expect(err).ToNot(HaveOccurred())
+		waitForPoolsBeReady(len(pools))
+		Eventually(func() error {
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		By("running a VMI")
+		vmi, bootID := runVMI(ctx, client)
+		checkVMIOperational(ctx, client, vmi)
+
+		By("monitoring for dual virt-handler coverage while removing pools")
+		stopCh := make(chan struct{})
+		wg.Add(1)
+		go func() {
+			defer GinkgoRecover()
+			defer wg.Done()
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-ticker.C:
+					node, err := findNodeWithDualHandlerCoverage(ctx, client, virtHandlerName)
+					if err != nil || node == "" {
+						continue
+					}
+					mu.Lock()
+					violations = append(violations, node)
+					mu.Unlock()
+				}
+			}
+		}()
+
+		By("triggering pool removal")
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv := libkubevirt.GetCurrentKv(client).DeepCopy()
+			kv.Spec = *originalSpec.DeepCopy()
+			_, err := client.KubeVirt(kv.Namespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		By("waiting for all pool daemonsets to be deleted")
+		Eventually(func(g Gomega) {
+			daemonSets, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).List(ctx, metav1.ListOptions{})
+			g.Expect(err).ToNot(HaveOccurred())
+			prefix := fmt.Sprintf("%s-%s", virtHandlerName, poolNamePrefix)
+			hasPool := slices.ContainsFunc(daemonSets.Items, func(ds appsv1.DaemonSet) bool {
+				return strings.HasPrefix(ds.Name, prefix)
+			})
+			g.Expect(hasPool).To(BeFalse())
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+
+		close(stopCh)
+		wg.Wait()
+
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("asserting no dual coverage was observed on any node")
+		mu.Lock()
+		capturedViolations := slices.Clone(violations)
+		mu.Unlock()
+		Expect(capturedViolations).To(BeEmpty(),
+			"nodes with dual virt-handler coverage during pool removal: %v", capturedViolations)
+
+		By("verifying VMI survived pool removal without restart")
 		checkVMIOperational(ctx, client, vmi)
 		checkBootID(vmi, bootID)
 	})
@@ -650,10 +728,10 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		By("waiting for pool-0 to scale down and pool-1 to scale up")
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, pool0DSName, 0)
+			return checkDaemonSetStatus(ctx, client, pool0DSName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 		Eventually(func() error {
-			return checkDSStatus(ctx, client, pool1DSName, 2)
+			return checkDaemonSetStatus(ctx, client, pool1DSName, 2)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
@@ -952,7 +1030,7 @@ func removeNodeLabels(ctx context.Context, client kubecli.KubevirtClient, nodeNa
 	return err
 }
 
-func checkDSStatus(ctx context.Context, client kubecli.KubevirtClient, dsName string, expectedDesired int32) error {
+func checkDaemonSetStatus(ctx context.Context, client kubecli.KubevirtClient, dsName string, expectedDesired int32) error {
 	ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, dsName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -966,15 +1044,15 @@ func checkDSStatus(ctx context.Context, client kubecli.KubevirtClient, dsName st
 	return nil
 }
 
-func checkDSDeleted(ctx context.Context, client kubecli.KubevirtClient, dsName string) error {
+func isDaemonSetDeleted(ctx context.Context, client kubecli.KubevirtClient, dsName string) (bool, error) {
 	_, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, dsName, metav1.GetOptions{})
 	if err == nil {
-		return fmt.Errorf("daemonset %s still exists", dsName)
+		return false, nil
 	}
 	if k8serrors.IsNotFound(err) {
-		return nil
+		return true, nil
 	}
-	return err
+	return false, err
 }
 
 func findDefaultHandlerNode(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {
@@ -1007,6 +1085,37 @@ func findNodeWithLabel(ctx context.Context, client kubecli.KubevirtClient, label
 
 	for _, node := range nodesList.Items {
 		if node.Labels[labelKey] == labelValue {
+			return node.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// findNodeWithDualHandlerCoverage returns the name of the first node that has
+// running pods from two or more virt-handler DaemonSets (e.g. the default DS
+// and a pool DS running simultaneously). An empty string means no such node exists.
+func findNodeWithDualHandlerCoverage(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {
+	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	for _, node := range nodesList.Items {
+		pods, err := listRunningPodsOnNode(ctx, client, node.Name)
+		if err != nil {
+			return "", err
+		}
+
+		owningDSes := map[string]struct{}{}
+		for _, pod := range pods {
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "DaemonSet" && strings.HasPrefix(ref.Name, virtHandlerName) {
+					owningDSes[ref.Name] = struct{}{}
+				}
+			}
+		}
+
+		if len(owningDSes) > 1 {
 			return node.Name, nil
 		}
 	}

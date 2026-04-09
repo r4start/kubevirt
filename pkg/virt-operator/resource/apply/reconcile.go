@@ -643,6 +643,13 @@ func (r *Reconciler) createOrRollBackSystem(apiDeploymentsRolledOver bool) (bool
 		}
 	}
 
+	// Ensure orphaned pool DSes are gone before expanding the default DS.
+	// Without this gate, both the default DS and pool DSes briefly target
+	// the same nodes, causing checkDaemonSetStatus to error.
+	if done, err := r.deleteOrphanedPoolDaemonSets(); err != nil || !done {
+		return false, err
+	}
+
 	// create/update Daemonsets
 	allDone := true
 	for _, daemonSet := range r.targetStrategy.DaemonSets() {
@@ -1253,6 +1260,60 @@ func (r *Reconciler) virtTemplateDeploymentEnabled() bool {
 	}
 	virtTemplateDeployment := r.kv.Spec.Configuration.VirtTemplateDeployment
 	return virtTemplateDeployment == nil || virtTemplateDeployment.Enabled == nil || *virtTemplateDeployment.Enabled
+}
+
+// deleteOrphanedPoolDaemonSets removes pool virt-handler DSes that are no longer
+// in the target strategy. Returns (true, nil) only when all such DSes are gone,
+// so the caller can block the default DS rollout until pool pods have terminated.
+func (r *Reconciler) deleteOrphanedPoolDaemonSets() (bool, error) {
+	const poolPrefix = "virt-handler-"
+	gracePeriod := int64(0)
+
+	allGone := true
+	for _, obj := range r.stores.DaemonSetCache.List() {
+		ds, ok := obj.(*appsv1.DaemonSet)
+		if !ok || !strings.HasPrefix(ds.Name, poolPrefix) {
+			continue
+		}
+
+		inTarget := false
+		for _, target := range r.targetStrategy.DaemonSets() {
+			if target.Name == ds.Name {
+				inTarget = true
+				break
+			}
+		}
+		if inTarget {
+			continue
+		}
+
+		// Orphaned pool DS found — not safe to expand default DS yet.
+		allGone = false
+		if ds.DeletionTimestamp != nil {
+			continue // already deleting, just wait
+		}
+
+		key, err := controller.KeyFunc(ds)
+		if err != nil {
+			return false, err
+		}
+
+		r.expectations.DaemonSet.AddExpectedDeletion(r.kvKey, key)
+
+		err = r.clientset.AppsV1().DaemonSets(ds.Namespace).
+			Delete(
+				context.Background(),
+				ds.Name,
+				metav1.DeleteOptions{
+					GracePeriodSeconds: &gracePeriod,
+				},
+			)
+		if err != nil {
+			r.expectations.DaemonSet.DeletionObserved(r.kvKey, key)
+			return false, err
+		}
+	}
+	return allGone, nil
 }
 
 func getInstallStrategyAnnotations(meta *metav1.ObjectMeta) (imageTag, imageRegistry, id string, ok bool) {
