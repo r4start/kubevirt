@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	k8sv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
@@ -47,6 +48,8 @@ func DaemonsetIsReady(kv *v1.KubeVirt, daemonset *appsv1.DaemonSet, stores Store
 		isReady := IsVirtHandlerReady(kv, stores, daemonset)
 		if !isReady {
 			log.Log.V(4).Infof("DaemonSet %v not ready yet", daemonset.Name)
+		} else {
+			log.Log.Warningf("DaemonSet %v has no scheduled pods (DesiredNumberScheduled == 0); its node selector may not match any nodes", daemonset.Name)
 		}
 		return isReady
 	}
@@ -59,12 +62,16 @@ func DaemonsetIsReady(kv *v1.KubeVirt, daemonset *appsv1.DaemonSet, stores Store
 	// cross check that we have 'daemonset.Status.NumberReady' pods with
 	// the desired version tag. This ensures we wait for rolling update to complete
 	// before marking the infrastructure as 100% ready.
+	// Use owner references instead of name prefix matching to avoid cross-contamination
+	// between the default virt-handler DS and pool DSes (e.g. "virt-handler" vs "virt-handler-pool1").
 	var podsReady int32
 	for _, obj := range stores.InfrastructurePodCache.List() {
 		if pod, ok := obj.(*k8sv1.Pod); ok {
 			if !podIsRunning(pod) {
 				continue
-			} else if !podHasNamePrefix(pod, daemonset.Name) {
+			}
+			owner := metav1.GetControllerOf(pod)
+			if owner == nil || owner.Name != daemonset.Name {
 				continue
 			}
 
