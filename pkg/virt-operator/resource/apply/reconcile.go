@@ -1268,6 +1268,7 @@ func (r *Reconciler) virtTemplateDeploymentEnabled() bool {
 func (r *Reconciler) deleteOrphanedPoolDaemonSets() (bool, error) {
 	const poolPrefix = "virt-handler-"
 	gracePeriod := int64(0)
+	deletePropagation := metav1.DeletePropagationForeground
 
 	allGone := true
 	for _, obj := range r.stores.DaemonSetCache.List() {
@@ -1289,31 +1290,54 @@ func (r *Reconciler) deleteOrphanedPoolDaemonSets() (bool, error) {
 
 		// Orphaned pool DS found — not safe to expand default DS yet.
 		allGone = false
-		if ds.DeletionTimestamp != nil {
-			continue // already deleting, just wait
+		if ds.DeletionTimestamp == nil {
+			key, err := controller.KeyFunc(ds)
+			if err != nil {
+				return false, err
+			}
+
+			r.expectations.DaemonSet.AddExpectedDeletion(r.kvKey, key)
+
+			err = r.virtClient.AppsV1().DaemonSets(ds.Namespace).
+				Delete(
+					context.Background(),
+					ds.Name,
+					metav1.DeleteOptions{
+						GracePeriodSeconds: &gracePeriod,
+						PropagationPolicy:  &deletePropagation,
+					},
+				)
+			if err != nil {
+				r.expectations.DaemonSet.DeletionObserved(r.kvKey, key)
+				return false, err
+			}
 		}
 
-		key, err := controller.KeyFunc(ds)
-		if err != nil {
-			return false, err
+		if r.orphanedDaemonSetHasRunningPods(ds.Name) {
+			continue
 		}
 
-		r.expectations.DaemonSet.AddExpectedDeletion(r.kvKey, key)
-
-		err = r.clientset.AppsV1().DaemonSets(ds.Namespace).
-			Delete(
-				context.Background(),
-				ds.Name,
-				metav1.DeleteOptions{
-					GracePeriodSeconds: &gracePeriod,
-				},
-			)
-		if err != nil {
-			r.expectations.DaemonSet.DeletionObserved(r.kvKey, key)
-			return false, err
-		}
+		// The DS is already deleting and no pod owned by it is still running.
+		// Wait for the cache entry itself to disappear before allowing the default
+		// virt-handler DS to expand onto the freed nodes.
 	}
 	return allGone, nil
+}
+
+func (r *Reconciler) orphanedDaemonSetHasRunningPods(daemonSetName string) bool {
+	for _, obj := range r.stores.InfrastructurePodCache.List() {
+		pod, ok := obj.(*corev1.Pod)
+		if !ok || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+
+		owner := metav1.GetControllerOf(pod)
+		if owner != nil && owner.Kind == "DaemonSet" && owner.Name == daemonSetName {
+			return true
+		}
+	}
+
+	return false
 }
 
 func getInstallStrategyAnnotations(meta *metav1.ObjectMeta) (imageTag, imageRegistry, id string, ok bool) {

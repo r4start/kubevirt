@@ -729,10 +729,14 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("waiting for pool-0 to scale down and pool-1 to scale up")
 		Eventually(func() error {
 			return checkDaemonSetStatus(ctx, client, pool0DSName, 0)
-		}, 240*time.Second, 1*time.Second).Should(Succeed())
+		}, 420*time.Second, 1*time.Second).Should(Succeed())
+		By("waiting for the old pool-0 pod to leave the re-labeled node")
+		Eventually(func() (bool, error) {
+			return isDaemonSetPodRunningOnNode(ctx, client, pool0NodeName, pool0DSName)
+		}, 420*time.Second, 1*time.Second).Should(BeFalse())
 		Eventually(func() error {
 			return checkDaemonSetStatus(ctx, client, pool1DSName, 2)
-		}, 240*time.Second, 1*time.Second).Should(Succeed())
+		}, 420*time.Second, 1*time.Second).Should(Succeed())
 
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
@@ -1053,6 +1057,23 @@ func isDaemonSetDeleted(ctx context.Context, client kubecli.KubevirtClient, dsNa
 		return true, nil
 	}
 	return false, err
+}
+
+func isDaemonSetPodRunningOnNode(ctx context.Context, client kubecli.KubevirtClient, nodeName, dsName string) (bool, error) {
+	pods, err := listRunningPodsOnNode(ctx, client, nodeName)
+	if err != nil {
+		return false, err
+	}
+
+	for _, pod := range pods {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "DaemonSet" && ref.Name == dsName {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }
 
 func findDefaultHandlerNode(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {

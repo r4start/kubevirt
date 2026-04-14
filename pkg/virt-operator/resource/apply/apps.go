@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/openshift/library-go/pkg/operator/resource/resourcemerge"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
@@ -13,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
-	"kubevirt.io/client-go/log"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
@@ -31,7 +31,7 @@ const (
 )
 
 var (
-	daemonSetDefaultMaxUnavailable = intstr.FromInt(1)
+	daemonSetDefaultMaxUnavailable = intstr.FromInt32(1)
 	daemonSetFastMaxUnavailable    = intstr.FromString("10%")
 )
 
@@ -219,10 +219,26 @@ func daemonHasDefaultRolloutStrategy(daemonSet *appsv1.DaemonSet) bool {
 func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonSet, objectChanged bool) (bool, error, canaryUpgradeStatus) {
 	var updatedAndReadyPods int32
 
-	log := log.Log.With("resource", fmt.Sprintf("ds/%s", cachedDaemonSet.Name))
-
+	logger := log.Log.With("resource", fmt.Sprintf("ds/%s", cachedDaemonSet.Name))
 	desiredReadyPods := cachedDaemonSet.Status.DesiredNumberScheduled
 	updatedAndReadyPods = r.howManyUpdatedAndReadyPods(cachedDaemonSet)
+
+	if desiredReadyPods == 0 &&
+		util.IsVirtHandlerReady(r.kv, r.stores, cachedDaemonSet) {
+
+		if objectChanged || !daemonHasDefaultRolloutStrategy(cachedDaemonSet) {
+			setMaxUnavailable(newDS, daemonSetDefaultMaxUnavailable)
+			patchedDS, err := r.patchDaemonSet(cachedDaemonSet, newDS)
+			if err != nil {
+				return false, fmt.Errorf("unable to patch a daemonset %+v: %v", newDS, err), failed
+			}
+			SetGeneration(&r.kv.Status.Generations, patchedDS)
+		} else {
+			SetGeneration(&r.kv.Status.Generations, cachedDaemonSet)
+		}
+
+		return true, nil, successful
+	}
 
 	switch {
 	case objectChanged:
@@ -232,45 +248,21 @@ func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonS
 		if err != nil {
 			return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), failed
 		}
-		log.V(2).Infof("daemonSet %v started upgrade", newDS.GetName())
+		logger.V(2).Infof("daemonSet %v started upgrade", newDS.GetName())
 		// Do not call SetGeneration here. The generation mismatch ensures
 		// subsequent reconciles re-enter processCanaryUpgrade so the
 		// canary can progress through Increasing and Successful.
 		return false, nil, started
 	case updatedAndReadyPods == 0:
-		if desiredReadyPods == 0 &&
-			util.IsVirtHandlerReady(r.kv, r.stores, cachedDaemonSet) {
-			if !isDaemonSetUpdated {
-				patchedDS, err := r.patchDaemonSet(cachedDaemonSet, newDS)
-				if err != nil {
-					return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), CanaryUpgradeStatusFailed
-				}
-				SetGeneration(&r.kv.Status.Generations, patchedDS)
-			} else {
-				SetGeneration(&r.kv.Status.Generations, cachedDaemonSet)
-			}
-
-			return true, nil, CanaryUpgradeStatusSuccessful
-		}
-
-		if !isDaemonSetUpdated {
-			// start canary upgrade
-			setMaxUnavailable(newDS, daemonSetDefaultMaxUnavailable)
-			_, err := r.patchDaemonSet(cachedDaemonSet, newDS)
-			if err != nil {
-				return false, fmt.Errorf("unable to start canary upgrade for daemonset %+v: %v", newDS, err), CanaryUpgradeStatusFailed
-			}
-			log.V(2).Infof("daemonSet %v started upgrade", newDS.GetName())
-		} else {
-			// check for a crashed canary pod
-			canaryPods := r.getCanaryPods(cachedDaemonSet)
-			for _, canary := range canaryPods {
-				if canary != nil && util.PodIsCrashLooping(canary) {
-					r.recorder.Eventf(cachedDaemonSet, corev1.EventTypeWarning, failedUpdateDaemonSetReason, "daemonSet %v rollout failed", cachedDaemonSet.Name)
-					return false, fmt.Errorf("daemonSet %s rollout failed", cachedDaemonSet.Name), CanaryUpgradeStatusFailed
-				}
+		// check for a crashed canary pod
+		canaryPods := r.getCanaryPods(cachedDaemonSet)
+		for _, canaryPod := range canaryPods {
+			if canaryPod != nil && util.PodIsCrashLooping(canaryPod) {
+				r.recorder.Eventf(cachedDaemonSet, corev1.EventTypeWarning, failedUpdateDaemonSetReason, "daemonSet %v rollout failed", cachedDaemonSet.Name)
+				return false, fmt.Errorf("daemonSet %s rollout failed", cachedDaemonSet.Name), failed
 			}
 		}
+
 		return false, nil, canary
 	case updatedAndReadyPods > 0 && updatedAndReadyPods < desiredReadyPods:
 		if daemonHasDefaultRolloutStrategy(cachedDaemonSet) {
@@ -282,11 +274,11 @@ func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonS
 			if err != nil {
 				return false, fmt.Errorf("unable to update daemonset %+v: %v", newDS, err), failed
 			}
-			log.V(2).Infof("daemonSet %v updated", newDS.GetName())
+			logger.V(2).Infof("daemonSet %v updated", newDS.GetName())
 			SetGeneration(&r.kv.Status.Generations, newDS)
 			return false, nil, increasing
 		}
-		log.V(4).Infof("waiting for all pods of daemonSet %v to be ready", newDS.GetName())
+		logger.V(4).Infof("waiting for all pods of daemonSet %v to be ready", newDS.GetName())
 		return false, nil, waiting
 	case updatedAndReadyPods > 0 && updatedAndReadyPods == desiredReadyPods:
 		// rollout has completed and all virt-handlers are ready revert
@@ -297,11 +289,11 @@ func (r *Reconciler) processCanaryUpgrade(cachedDaemonSet, newDS *appsv1.DaemonS
 			return false, err, failed
 		}
 		SetGeneration(&r.kv.Status.Generations, newDS)
-		log.V(2).Infof("daemonSet %v is ready", newDS.GetName())
+		logger.V(2).Infof("daemonSet %v is ready", newDS.GetName())
 		return true, nil, successful
 	default:
 		err := fmt.Errorf("unexpected canary upgrade state: updatedAndReadyPods=%d, desiredReadyPods=%d", updatedAndReadyPods, desiredReadyPods)
-		log.Errorf("%s", err)
+		logger.Errorf("%s", err)
 		return false, err, failed
 	}
 }

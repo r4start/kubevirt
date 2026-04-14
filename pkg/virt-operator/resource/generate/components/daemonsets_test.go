@@ -62,7 +62,7 @@ var _ = Describe("Handler DaemonSet", func() {
 	)
 
 	It("should not use bidirectional mount propagation for the kubelet volume", func() {
-		ds := NewHandlerDaemonSet(config, "", "", "")
+		ds := NewHandlerDaemonSet(config, "", "", "", nil)
 		container := ds.Spec.Template.Spec.Containers[0]
 
 		var kubeletMount *corev1.VolumeMount
