@@ -12,6 +12,13 @@ func (r *Reconciler) updateKubeVirtSystem(controllerDeploymentsRolledOver bool) 
 	// 4. wait for controllers to roll over
 	// 5. apiserver - toggles on new features.
 
+	// Pool removal also goes through the update path when the overall KubeVirt
+	// version is unchanged. Ensure orphaned pool DSes are drained before the
+	// default DS is allowed to expand onto their former nodes.
+	if done, err := r.deleteOrphanedPoolDaemonSets(); err != nil || !done {
+		return false, err
+	}
+
 	// create/update Daemonsets
 	allDone := true
 	for _, daemonSet := range r.targetStrategy.DaemonSets() {

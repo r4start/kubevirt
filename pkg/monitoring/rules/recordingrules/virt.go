@@ -121,7 +121,7 @@ func virtRecordingRules(namespace string) []operatorrules.RecordingRule {
 		         },
 		       "pool", "$1", "label_kubevirt_io_handler_pool", "(.*)"
 		       )
-		     ) or vector(0)`, namespace)
+		     ) or vector(0)`, namespace),
 		),
 	}
 }
