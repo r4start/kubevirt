@@ -3447,7 +3447,7 @@ var _ = Describe("KubeVirt Operator", func() {
 				apiDeployment := components.NewApiServerDeployment(customConfig, "", "", "")
 				controllerDeployment := components.NewControllerDeployment(customConfig, "", "", "")
 				exportProxyDeployment := components.NewExportProxyDeployment(customConfig, "", "", "")
-				handlerDaemonset := components.NewHandlerDaemonSet(customConfig, "", "", "")
+				handlerDaemonset := components.NewHandlerDaemonSet(customConfig, "", "", "", nil)
 				// Inject pr-helper into current state to observe removal later on
 				handlerDaemonset.Spec.Template.Spec.Containers = append(handlerDaemonset.Spec.Template.Spec.Containers, k8sv1.Container{
 					Name: components.PrHelperName,
