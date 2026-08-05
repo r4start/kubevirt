@@ -1,7 +1,10 @@
 package components
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -73,7 +76,7 @@ func NewHandlerDaemonSet(
 	productVersion string,
 	productComponent string,
 	pool *operatorutil.HandlerPoolConfig,
-) *appsv1.DaemonSet {
+) (*appsv1.DaemonSet, error) {
 	var (
 		deploymentName string
 		image          = config.VirtHandlerImage
@@ -118,7 +121,9 @@ func NewHandlerDaemonSet(
 	}
 	podTemplateSpec.Annotations["openshift.io/required-scc"] = "kubevirt-handler"
 
-	setVirtHandlerAffinity(config, pool, podTemplateSpec)
+	if err := setVirtHandlerAffinity(config, pool, podTemplateSpec); err != nil {
+		return nil, err
+	}
 
 	daemonset := &appsv1.DaemonSet{
 		TypeMeta: metav1.TypeMeta{
@@ -437,7 +442,7 @@ func NewHandlerDaemonSet(
 			}})
 		pod.Containers = append(pod.Containers, RenderPrHelperContainer(prHelperImage, config.GetImagePullPolicy()))
 	}
-	return daemonset
+	return daemonset, nil
 
 }
 
@@ -445,71 +450,70 @@ func setVirtHandlerAffinity(
 	config *operatorutil.KubeVirtDeploymentConfig,
 	pool *operatorutil.HandlerPoolConfig,
 	podTemplateSpec *corev1.PodTemplateSpec,
-) {
-	if !config.HandlerPoolsEnabled() || len(config.HandlerPools) == 0 {
-		return
+) error {
+	if !config.HandlerPoolsEnabled() || len(config.HandlerPools.Pools) == 0 {
+		return nil
 	}
 
-	if pool != nil {
-		podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
-		if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
-			podTemplateSpec.Spec.NodeSelector = make(map[string]string)
+	if pool == nil {
+		exclusionTerms, err := generateDefaultHandlerPoolExclusions(config.HandlerPools.PartitionKeys, config.HandlerPools.Pools)
+		if err != nil {
+			return err
 		}
-		for k, v := range pool.NodeSelector {
-			podTemplateSpec.Spec.NodeSelector[k] = v
-		}
+		applyDefaultHandlerExclusionTerms(podTemplateSpec, exclusionTerms)
+		return nil
+	}
 
-		var antiAffinity []corev1.PodAffinityTerm
-		for _, otherPool := range config.HandlerPools {
-			if otherPool.Name == pool.Name {
-				continue
-			}
-			antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
-				LabelSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						virtv1.AppLabel:  VirtHandlerName,
-						handlerPoolLabel: otherPool.Name,
-					},
+	podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
+	if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
+		podTemplateSpec.Spec.NodeSelector = make(map[string]string)
+	}
+	for k, v := range pool.NodeSelector {
+		podTemplateSpec.Spec.NodeSelector[k] = v
+	}
+
+	var antiAffinity []corev1.PodAffinityTerm
+	for _, otherPool := range config.HandlerPools.Pools {
+		if otherPool.Name == pool.Name {
+			continue
+		}
+		antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					virtv1.AppLabel:  VirtHandlerName,
+					handlerPoolLabel: otherPool.Name,
 				},
-				TopologyKey: "kubernetes.io/hostname",
-			})
-		}
-		if podTemplateSpec.Spec.Affinity == nil {
-			podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
-		}
-		if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
-			podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
-		}
-
-		podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
-		podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
-		return
+			},
+			TopologyKey: "kubernetes.io/hostname",
+		})
+	}
+	if podTemplateSpec.Spec.Affinity == nil {
+		podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+	}
+	if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+		podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
 	}
 
-	exclusionTerms := excludeHandlerPoolsTermsForDefaultHandler(config.HandlerPools)
-	applyDefaultHandlerExclusionTerms(podTemplateSpec, exclusionTerms)
+	podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
+	podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
+	return nil
 }
 
-func excludeHandlerPoolsTermsForDefaultHandler(pools []operatorutil.HandlerPoolConfig) []corev1.NodeSelectorTerm {
-	terms := []corev1.NodeSelectorTerm{{}}
-
+func generateDefaultHandlerPoolExclusions(
+	partitionKeys []string,
+	pools []operatorutil.HandlerPoolConfig,
+) ([]corev1.NodeSelectorTerm, error) {
+	prefixTree, err := newNodeSelectorTermsTree(partitionKeys)
+	if err != nil {
+		return nil, err
+	}
 	for _, p := range pools {
-		// NOT(pool) = OR over key!=value
-		disj := make([]corev1.NodeSelectorTerm, 0, len(p.NodeSelector))
-		for k, v := range p.NodeSelector {
-			disj = append(disj, corev1.NodeSelectorTerm{
-				MatchExpressions: []corev1.NodeSelectorRequirement{{
-					Key:      k,
-					Operator: corev1.NodeSelectorOpNotIn,
-					Values:   []string{v},
-				}},
-			})
+		if err := prefixTree.Insert(p.NodeSelector); err != nil {
+			return nil, err
 		}
-
-		terms = andNodeSelectorTerms(terms, disj)
 	}
 
-	return terms
+	return prefixTree.Terms()
 }
 
 func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
@@ -554,4 +558,118 @@ func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, 
 	// Existing required terms ORed with each other; exclusionTerms are also ORed.
 	// To enforce BOTH sets, build cartesian product (AND semantics).
 	required.NodeSelectorTerms = andNodeSelectorTerms(required.NodeSelectorTerms, exclusionTerms)
+}
+
+type treeNode struct {
+	children map[string]*treeNode
+}
+
+func newNode() *treeNode {
+	return &treeNode{
+		children: make(map[string]*treeNode),
+	}
+}
+
+type nodeSelectorTermsTree struct {
+	orderedKeys []string
+	root        *treeNode
+}
+
+func newNodeSelectorTermsTree(partitionKeys []string) (*nodeSelectorTermsTree, error) {
+	if len(partitionKeys) == 0 {
+		return nil, errors.New("partition keys shouldn't be empty")
+	}
+
+	orderedKeys := slices.Clone(partitionKeys)
+	slices.Sort(orderedKeys)
+
+	duplicates := make(map[string]struct{})
+	for _, key := range orderedKeys {
+		if _, found := duplicates[key]; found {
+			return nil, fmt.Errorf("duplicate partition key %s", key)
+		}
+		duplicates[key] = struct{}{}
+	}
+
+	return &nodeSelectorTermsTree{
+		orderedKeys: orderedKeys,
+		root:        newNode(),
+	}, nil
+}
+
+func (tree *nodeSelectorTermsTree) Insert(terms map[string]string) error {
+	if len(terms) != len(tree.orderedKeys) {
+		return errors.New("node selector terms don't conform with partition keys")
+	}
+
+	currentNode := tree.root
+	for _, key := range tree.orderedKeys {
+		var (
+			node   *treeNode
+			exists bool
+		)
+		value, exists := terms[key]
+		if !exists {
+			return fmt.Errorf("terms doesn't contain %s key", key)
+		}
+
+		node, exists = currentNode.children[value]
+		if !exists {
+			node = newNode()
+			currentNode.children[value] = node
+		}
+		currentNode = node
+	}
+
+	return nil
+}
+
+func (tree *nodeSelectorTermsTree) Terms() ([]corev1.NodeSelectorTerm, error) {
+	var (
+		result []corev1.NodeSelectorTerm
+		prefix = make([]string, 0)
+	)
+
+	if err := tree.dfs(&result, tree.root, prefix); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (tree *nodeSelectorTermsTree) dfs(selectors *[]corev1.NodeSelectorTerm, node *treeNode, prefix []string) error {
+	if len(node.children) == 0 {
+		return nil
+	}
+
+	values := slices.Collect(maps.Keys(node.children))
+	slices.Sort(values)
+
+	for _, value := range values {
+		if err := tree.dfs(selectors, node.children[value], append(prefix, value)); err != nil {
+			return err
+		}
+	}
+
+	currentLevel := len(prefix)
+	selector := corev1.NodeSelectorTerm{
+		MatchExpressions: []corev1.NodeSelectorRequirement{
+			{
+				Key:      tree.orderedKeys[currentLevel],
+				Operator: corev1.NodeSelectorOpNotIn,
+				Values:   values,
+			},
+		},
+	}
+
+	for i := range currentLevel {
+		selector.MatchExpressions = append(selector.MatchExpressions, corev1.NodeSelectorRequirement{
+			Key:      tree.orderedKeys[i],
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{prefix[i]},
+		})
+	}
+
+	*selectors = append(*selectors, selector)
+	return nil
 }

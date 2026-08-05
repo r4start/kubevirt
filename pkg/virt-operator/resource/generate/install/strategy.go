@@ -622,13 +622,19 @@ func GenerateCurrentInstallStrategy(config *operatorutil.KubeVirtDeploymentConfi
 	// Pool DSes are added before the default DS so that during an upgrade (pool addition),
 	// pool pods begin scheduling on pool nodes before the default DS removes its exclusion
 	// affinity. This minimizes the window where pool nodes have no virt-handler coverage.
-	if config.HandlerPoolsEnabled() && len(config.HandlerPools) != 0 {
-		for _, pool := range config.HandlerPools {
-			handler := components.NewHandlerDaemonSet(config, productName, productVersion, productComponent, &pool)
+	if config.HandlerPoolsEnabled() && len(config.HandlerPools.Pools) != 0 {
+		for _, pool := range config.HandlerPools.Pools {
+			handler, err := components.NewHandlerDaemonSet(config, productName, productVersion, productComponent, &pool)
+			if err != nil {
+				return nil, err
+			}
 			strategy.daemonSets = append(strategy.daemonSets, handler)
 		}
 	}
-	handler := components.NewHandlerDaemonSet(config, productName, productVersion, productComponent, nil)
+	handler, err := components.NewHandlerDaemonSet(config, productName, productVersion, productComponent, nil)
+	if err != nil {
+		return nil, err
+	}
 	strategy.daemonSets = append(strategy.daemonSets, handler)
 
 	strategy.sccs = append(strategy.sccs, components.GetAllSCC(config.GetNamespace())...)
