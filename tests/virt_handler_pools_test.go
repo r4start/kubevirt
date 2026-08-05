@@ -109,7 +109,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		return err
 	}
 
-	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) ([]k6tv1.HandlerPoolConfig, error) {
+	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.HandlerPoolsConfig, error) {
 		kv := libkubevirt.GetCurrentKv(client)
 		poolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
 		if err != nil {
@@ -150,7 +150,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		return kv.Spec.HandlerPools, nil
 	}
 
-	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools []k6tv1.HandlerPoolConfig) (*k6tv1.KubeVirt, error) {
+	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools *k6tv1.HandlerPoolsConfig) (*k6tv1.KubeVirt, error) {
 		kv := libkubevirt.GetCurrentKv(client)
 		kv.Spec.HandlerPools = pools
 
@@ -161,8 +161,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		if len(nodes) == 0 {
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
 		}
-		if len(nodes) < len(kv.Spec.HandlerPools) {
-			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools))
+		if len(nodes) < len(kv.Spec.HandlerPools.Pools) {
+			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools.Pools))
 		}
 
 		if err := updateNodesLabels(ctx, client, kv, nodes); err != nil {
@@ -203,7 +203,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	}
 
 	runVMI := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.VirtualMachineInstance, string) {
-		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(), libvmops.StartupTimeoutSecondsSmall)
+		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(), flags.StartupTimeoutSecondsSmall())
 		vmi = libwait.WaitUntilVMIReady(vmi, console.LoginToAlpine)
 
 		DeferCleanup(func() {
@@ -280,7 +280,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		pools, err := deployPools(ctx, client)
 		Expect(err).ToNot(HaveOccurred())
 
-		waitForPoolsBeReady(len(pools))
+		waitForPoolsBeReady(len(pools.Pools))
 
 		Eventually(func(g Gomega) {
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, virtHandlerName, metav1.GetOptions{})
@@ -325,7 +325,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		pools, err := generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
 		Expect(err).ToNot(HaveOccurred())
 
-		pools[0].NodeSelector[secondLabel] = ""
+		pools.Pools[0].NodeSelector[secondLabel] = ""
 
 		kv, err := deploySpecificPools(ctx, client, pools)
 		Expect(err).ToNot(HaveOccurred())
@@ -385,7 +385,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				}
 				seenVirtHandlers += 1
 			} else if ds.Name == virtHandlerName {
-				for _, pool := range pools {
+				for _, pool := range pools.Pools {
 					matchesPool := true
 					for key, expected := range pool.NodeSelector {
 						actual, found := node.Labels[key]
@@ -460,7 +460,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		imageWithAltTag := strings.Join(tagVersion, ":")
 		imageParts = append(imageParts, imageWithAltTag)
 
-		pools[0].VirtHandlerImage = strings.Join(imageParts, "/")
+		pools.Pools[0].VirtHandlerImage = strings.Join(imageParts, "/")
 
 		kv, err := deploySpecificPools(ctx, client, pools)
 		Expect(err).ToNot(HaveOccurred())
@@ -469,12 +469,12 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		ds, err = client.AppsV1().
 			DaemonSets(flags.KubeVirtInstallNamespace).
-			Get(ctx, fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name), metav1.GetOptions{})
+			Get(ctx, fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name), metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
 		virtHandlerContainer = findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
 		Expect(virtHandlerContainer).ToNot(BeNil())
-		Expect(virtHandlerContainer.Image).To(BeIdenticalTo(pools[0].VirtHandlerImage))
+		Expect(virtHandlerContainer.Image).To(BeIdenticalTo(pools.Pools[0].VirtHandlerImage))
 
 		dsList, err := client.AppsV1().
 			DaemonSets(flags.KubeVirtInstallNamespace).
@@ -487,7 +487,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 		Expect(dsList.Items).To(HaveLen(maxPoolsCount + 1))
 
-		customImagePoolName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		customImagePoolName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
 		for _, ds := range dsList.Items {
 			if ds.Name == customImagePoolName {
 				continue
@@ -542,7 +542,10 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		})
 
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
-			kv.Spec.HandlerPools = append(kv.Spec.HandlerPools, newPool)
+			if kv.Spec.HandlerPools == nil {
+				kv.Spec.HandlerPools = &k6tv1.HandlerPoolsConfig{}
+			}
+			kv.Spec.HandlerPools.Pools = append(kv.Spec.HandlerPools.Pools, newPool)
 		})).To(Succeed())
 
 		By("waiting for all pools including the new one to be ready")
@@ -568,7 +571,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("deploying pools for all nodes")
 		pools, err := deployPools(ctx, client)
 		Expect(err).ToNot(HaveOccurred())
-		waitForPoolsBeReady(len(pools))
+		waitForPoolsBeReady(len(pools.Pools))
 		Eventually(func() error {
 			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
@@ -578,11 +581,11 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		checkVMIOperational(ctx, client, vmi)
 
 		By("removing the first pool from configuration")
-		removedPoolName := pools[0].Name
+		removedPoolName := pools.Pools[0].Name
 		removedPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, removedPoolName)
 
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
-			kv.Spec.HandlerPools = slices.DeleteFunc(kv.Spec.HandlerPools, func(p k6tv1.HandlerPoolConfig) bool {
+			kv.Spec.HandlerPools.Pools = slices.DeleteFunc(kv.Spec.HandlerPools.Pools, func(p k6tv1.HandlerPoolConfig) bool {
 				return p.Name == removedPoolName
 			})
 		})).To(Succeed())
@@ -600,7 +603,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 
 		By("verifying remaining pools are still operational")
-		waitForPoolsBeReady(len(pools) - 1)
+		waitForPoolsBeReady(len(pools.Pools) - 1)
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
 		By("verifying VMI survived pool removal")
@@ -618,7 +621,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("deploying pools for all nodes")
 		pools, err := deployPools(ctx, client)
 		Expect(err).ToNot(HaveOccurred())
-		waitForPoolsBeReady(len(pools))
+		waitForPoolsBeReady(len(pools.Pools))
 		Eventually(func() error {
 			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
@@ -710,8 +713,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		checkVMIOperational(ctx, client, vmi)
 
 		By("finding the node assigned to pool-0")
-		pool0LabelValue := pools[0].NodeSelector[poolSelectorLabelName]
-		pool1LabelValue := pools[1].NodeSelector[poolSelectorLabelName]
+		pool0LabelValue := pools.Pools[0].NodeSelector[poolSelectorLabelName]
+		pool1LabelValue := pools.Pools[1].NodeSelector[poolSelectorLabelName]
 
 		pool0NodeName, err := findNodeWithLabel(ctx, client, poolSelectorLabelName, pool0LabelValue)
 		Expect(err).ToNot(HaveOccurred())
@@ -723,8 +726,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool0LabelValue})).To(Succeed())
 		})
 
-		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
-		pool1DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[1].Name)
+		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
+		pool1DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[1].Name)
 
 		By("waiting for pool-0 to scale down and pool-1 to scale up")
 		Eventually(func() error {
@@ -753,14 +756,14 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("deploying pools")
 		pools, err := deployPools(ctx, client)
 		Expect(err).ToNot(HaveOccurred())
-		waitForPoolsBeReady(len(pools))
+		waitForPoolsBeReady(len(pools.Pools))
 
 		By("running a VMI")
 		vmi, bootID := runVMI(ctx, client)
 		checkVMIOperational(ctx, client, vmi)
 
 		By("getting current virt-handler image from pool-0")
-		targetPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		targetPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
 		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, targetPoolDSName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
@@ -771,9 +774,9 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		By("updating pool-0 with custom image")
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
-			for i := range kv.Spec.HandlerPools {
-				if kv.Spec.HandlerPools[i].Name == pools[0].Name {
-					kv.Spec.HandlerPools[i].VirtHandlerImage = altImage
+			for i := range kv.Spec.HandlerPools.Pools {
+				if kv.Spec.HandlerPools.Pools[i].Name == pools.Pools[0].Name {
+					kv.Spec.HandlerPools.Pools[i].VirtHandlerImage = altImage
 					break
 				}
 			}
@@ -793,7 +796,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
 		By("verifying other pool DSes still use default image")
-		for _, pool := range pools[1:] {
+		for _, pool := range pools.Pools[1:] {
 			poolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pool.Name)
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, poolDSName, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -817,14 +820,14 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("deploying pools")
 		pools, err := deployPools(ctx, client)
 		Expect(err).ToNot(HaveOccurred())
-		waitForPoolsBeReady(len(pools))
+		waitForPoolsBeReady(len(pools.Pools))
 
 		By("running a VMI")
 		vmi, bootID := runVMI(ctx, client)
 		checkVMIOperational(ctx, client, vmi)
 
 		By("finding the node assigned to pool-0")
-		pool0LabelValue := pools[0].NodeSelector[poolSelectorLabelName]
+		pool0LabelValue := pools.Pools[0].NodeSelector[poolSelectorLabelName]
 		pool0NodeName, err := findNodeWithLabel(ctx, client, poolSelectorLabelName, pool0LabelValue)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pool0NodeName).ToNot(BeEmpty(), "could not find node assigned to pool-0")
@@ -838,9 +841,9 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		By("updating pool-0's node selector in KubeVirt spec")
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
-			for i := range kv.Spec.HandlerPools {
-				if kv.Spec.HandlerPools[i].Name == pools[0].Name {
-					kv.Spec.HandlerPools[i].NodeSelector = map[string]string{
+			for i := range kv.Spec.HandlerPools.Pools {
+				if kv.Spec.HandlerPools.Pools[i].Name == pools.Pools[0].Name {
+					kv.Spec.HandlerPools.Pools[i].NodeSelector = map[string]string{
 						poolSelectorLabelName: newSelectorValue,
 					}
 					break
@@ -849,7 +852,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		})).To(Succeed())
 
 		By("waiting for pool-0 DS to update with new selector and become ready")
-		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools[0].Name)
+		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
 		Eventually(func(g Gomega) {
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, pool0DSName, metav1.GetOptions{})
 			g.Expect(err).ToNot(HaveOccurred())
@@ -870,11 +873,13 @@ func generatePools(
 	poolsCount int,
 	poolNamePrefix string,
 	poolSelectorLabelName string,
-) ([]k6tv1.HandlerPoolConfig, error) {
-	handlerPools := make([]k6tv1.HandlerPoolConfig, 0, poolsCount)
+) (*k6tv1.HandlerPoolsConfig, error) {
+	handlerPoolsConfig := &k6tv1.HandlerPoolsConfig{
+		Pools: make([]k6tv1.HandlerPoolConfig, 0, poolsCount),
+	}
 	for i := range poolsCount {
 		poolName := fmt.Sprintf("%s-%d", poolNamePrefix, i)
-		handlerPools = append(handlerPools,
+		handlerPoolsConfig.Pools = append(handlerPoolsConfig.Pools,
 			k6tv1.HandlerPoolConfig{
 				Name: poolName,
 				NodeSelector: map[string]string{
@@ -883,7 +888,7 @@ func generatePools(
 			})
 	}
 
-	return handlerPools, nil
+	return handlerPoolsConfig, nil
 }
 
 func setNodesLabels(
@@ -893,7 +898,7 @@ func setNodesLabels(
 	nodes []*corev1.Node,
 ) (map[string][]string, error) {
 	nodesLabels := make(map[string][]string)
-	for i, pool := range kv.Spec.HandlerPools {
+	for i, pool := range kv.Spec.HandlerPools.Pools {
 		var labels []string
 		keys := make(map[string]struct{})
 		for k, v := range pool.NodeSelector {

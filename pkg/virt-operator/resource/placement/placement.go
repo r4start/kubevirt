@@ -21,6 +21,7 @@ package placement
 
 import (
 	corev1 "k8s.io/api/core/v1"
+
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 )
