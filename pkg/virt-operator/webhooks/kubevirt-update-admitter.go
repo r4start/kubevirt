@@ -20,9 +20,11 @@
 package webhooks
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"slices"
 	"strconv"
 
@@ -86,6 +88,8 @@ func (admitter *KubeVirtUpdateAdmitter) Admit(ctx context.Context, ar *admission
 		&currKV.Spec.Configuration,
 		&newKV.Spec.Configuration,
 	)...)
+
+	results = append(results, validateHandlerPools(newKV)...)
 
 	if !equality.Semantic.DeepEqual(currKV.Spec.Configuration.TLSConfiguration, newKV.Spec.Configuration.TLSConfiguration) {
 		if newKV.Spec.Configuration.TLSConfiguration != nil {
@@ -590,6 +594,123 @@ func validateMigrationConfiguration(oldConfig, newConfig *v1.KubeVirtConfigurati
 				Message: fmt.Sprintf("maxDowntimeMs cannot be modified without enabling the %s or %s feature gate", featuregate.MigrationStallDetection, featuregate.MigrationDowntimeTuning),
 			})
 		}
+	}
+
+	return causes
+}
+
+func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
+	const (
+		partitionKeysField = "spec.handlerPools.partitionKeys"
+		nodeSelectorField  = "spec.handlerPools.pools.nodeSelector"
+	)
+	var (
+		causes []metav1.StatusCause
+	)
+
+	if !hasFeatureGateEnabled(&config.Spec.Configuration, featuregate.HandlerPoolsGate) ||
+		config.Spec.HandlerPools == nil ||
+		len(config.Spec.HandlerPools.Pools) == 0 {
+		return causes
+	}
+
+	poolsConfig := config.Spec.HandlerPools
+
+	partitionKeysLen := len(poolsConfig.PartitionKeys)
+	if partitionKeysLen <= 0 || partitionKeysLen > 16 {
+		return []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueRequired,
+				Message: fmt.Sprintf("partitionKeys length should be between 1 and 16, but it is %d", partitionKeysLen),
+				Field:   partitionKeysField,
+			},
+		}
+	}
+
+	partitionKeys := make(map[string]struct{})
+	for _, key := range poolsConfig.PartitionKeys {
+		if _, found := partitionKeys[key]; found {
+			causes = append(causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: fmt.Sprintf("partitionKeys should be unique, but there are two duplicate keys: %s", key),
+				Field:   partitionKeysField,
+			})
+		}
+		partitionKeys[key] = struct{}{}
+	}
+
+	if len(causes) != 0 {
+		return causes
+	}
+
+	poolsCount := len(poolsConfig.Pools)
+	poolsNames := make(map[string]struct{}, poolsCount)
+	poolsLabels := make(map[uint64]struct{}, poolsCount)
+	for _, pool := range poolsConfig.Pools {
+		if _, found := poolsNames[pool.Name]; found {
+			causes = append(causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: fmt.Sprintf("pools names should be unique, but there are two duplicates: %s", pool.Name),
+				Field:   "spec.handlerPools.pools.name",
+			})
+		}
+
+		poolsNames[pool.Name] = struct{}{}
+
+		type selector struct {
+			key   string
+			value string
+		}
+
+		sortedLabels := make([]selector, 0, len(pool.NodeSelector))
+		for label, value := range pool.NodeSelector {
+			sortedLabels = append(sortedLabels, selector{
+				key:   label,
+				value: value,
+			})
+
+			if _, found := partitionKeys[label]; !found {
+				causes = append(causes, metav1.StatusCause{
+					Type:    metav1.CauseTypeFieldValueNotFound,
+					Message: fmt.Sprintf("node selectors should specify all partition keys, but %s has an additional label: %s", pool.Name, label),
+					Field:   nodeSelectorField,
+				})
+			}
+		}
+
+		if len(sortedLabels) != partitionKeysLen {
+			causes = append(causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeFieldValueNotFound,
+				Message: fmt.Sprintf("pool %s doesn't specify all partition keys %+v", pool.Name, poolsConfig.PartitionKeys),
+				Field:   nodeSelectorField,
+			})
+		}
+
+		sortedLabels = slices.SortedStableFunc(slices.Values(sortedLabels), func(left selector, right selector) int {
+			result := cmp.Compare(left.key, right.key)
+			if result != 0 {
+				return result
+			}
+			return cmp.Compare(left.value, right.value)
+		})
+
+		hasher := fnv.New64()
+		for _, sel := range sortedLabels {
+			_, _ = hasher.Write([]byte(sel.key))
+			_, _ = hasher.Write([]byte(sel.value))
+		}
+
+		hashedSelector := hasher.Sum64()
+
+		if _, found := poolsLabels[hashedSelector]; found {
+			causes = append(causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: fmt.Sprintf("node selectors should be unique across all pools, but %s has an intersection", pool.Name),
+				Field:   nodeSelectorField,
+			})
+		}
+
+		poolsLabels[hashedSelector] = struct{}{}
 	}
 
 	return causes

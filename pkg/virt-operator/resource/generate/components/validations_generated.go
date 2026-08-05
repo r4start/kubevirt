@@ -1905,35 +1905,49 @@ var CRDsValidation map[string]string = map[string]string{
         handlerPools:
           description: HandlerPools allows specifying different virt-handler images
             for different sets of nodes.
-          items:
-            properties:
-              name:
-                description: |-
-                  name is a unique identifier appended to "virt-handler" to form the DaemonSet name.
-                  For example, "gpu" results in a DaemonSet named "virt-handler-gpu".
-                maxLength: 48
-                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+          properties:
+            partitionKeys:
+              items:
                 type: string
-              nodeSelector:
-                additionalProperties:
-                  type: string
-                description: |-
-                  nodeSelector specifies labels that must match a node's labels for this DaemonSet's pods
-                  to be scheduled on that node. This is also used to match VMIs to determine which
-                  virt-launcher image to use.
-                minProperties: 1
+              maxItems: 16
+              minItems: 1
+              type: array
+              x-kubernetes-list-type: set
+            pools:
+              items:
+                properties:
+                  name:
+                    description: |-
+                      name is a unique identifier appended to "virt-handler" to form the DaemonSet name.
+                      For example, "gpu" results in a DaemonSet named "virt-handler-gpu".
+                    maxLength: 48
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      nodeSelector specifies labels that must match a node's labels for this DaemonSet's pods
+                      to be scheduled on that node. This is also used to match VMIs to determine which
+                      virt-launcher image to use.
+                    minProperties: 1
+                    type: object
+                  virtHandlerImage:
+                    description: |-
+                      virtHandlerImage overrides the virt-handler container image for this DaemonSet.
+                      If not specified, the default virt-handler image is used.
+                    type: string
+                required:
+                - name
+                - nodeSelector
                 type: object
-              virtHandlerImage:
-                description: |-
-                  virtHandlerImage overrides the virt-handler container image for this DaemonSet.
-                  If not specified, the default virt-handler image is used.
-                type: string
-            required:
-            - name
-            - nodeSelector
-            type: object
-          type: array
-          x-kubernetes-list-type: atomic
+              minItems: 1
+              type: array
+              x-kubernetes-list-type: atomic
+          required:
+          - partitionKeys
+          - pools
+          type: object
         imagePullPolicy:
           description: |-
             The ImagePullPolicy to use for KubeVirt operator-managed infrastructure

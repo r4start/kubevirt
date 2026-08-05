@@ -279,6 +279,484 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 		}, 0),
 	)
 
+	DescribeTable("test validateHandlerPools", func(kv *v1.KubeVirt, expectedCauses []metav1.StatusCause) {
+		causes := validateHandlerPools(kv)
+		Expect(causes).To(Equal(expectedCauses))
+	},
+		Entry("empty pools", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: nil,
+			},
+		}, nil),
+		Entry("pools not enabled", &v1.KubeVirt{Spec: v1.KubeVirtSpec{}}, nil),
+		Entry("partition keys with no pools", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{"some-key-1"},
+					Pools:         nil,
+				},
+			},
+		}, nil),
+		Entry("too many partition keys", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+						"some-key-3",
+						"some-key-4",
+						"some-key-5",
+						"some-key-6",
+						"some-key-7",
+						"some-key-8",
+						"some-key-9",
+						"some-key-10",
+						"some-key-11",
+						"some-key-12",
+						"some-key-13",
+						"some-key-14",
+						"some-key-15",
+						"some-key-16",
+						"some-key-17",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector:     nil,
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueRequired,
+				Message: "partitionKeys length should be between 1 and 16, but it is 17",
+				Field:   "spec.handlerPools.partitionKeys",
+			},
+		}),
+		Entry("not enough partition keys", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector:     nil,
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueRequired,
+				Message: "partitionKeys length should be between 1 and 16, but it is 0",
+				Field:   "spec.handlerPools.partitionKeys",
+			},
+		}),
+		Entry("partition keys with duplicates", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+						"some-key-1",
+						"some-key-4",
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector:     nil,
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: "partitionKeys should be unique, but there are two duplicate keys: some-key-1",
+				Field:   "spec.handlerPools.partitionKeys",
+			},
+			{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: "partitionKeys should be unique, but there are two duplicate keys: some-key-1",
+				Field:   "spec.handlerPools.partitionKeys",
+			},
+		}),
+		Entry("a pool with no selectors", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector:     nil,
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueNotFound",
+				Message: "pool pool-1 doesn't specify all partition keys [some-key-1 some-key-2]",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
+		Entry("pools with non-unique names", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+						{
+							Name:             "pool-2",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+							},
+						},
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "3",
+							},
+						},
+						{
+							Name:             "pool-3",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "4",
+							},
+						},
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "5",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: "pools names should be unique, but there are two duplicates: pool-1",
+				Field:   "spec.handlerPools.pools.name",
+			},
+			{
+				Type:    metav1.CauseTypeFieldValueDuplicate,
+				Message: "pools names should be unique, but there are two duplicates: pool-1",
+				Field:   "spec.handlerPools.pools.name",
+			},
+		}),
+		Entry("pools with intersections", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+						{
+							Name:             "pool-2",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+							},
+						},
+						{
+							Name:             "pool-3",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "3",
+							},
+						},
+						{
+							Name:             "pool-4",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+						{
+							Name:             "pool-5",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueDuplicate",
+				Message: "node selectors should be unique across all pools, but pool-4 has an intersection",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+			{
+				Type:    "FieldValueDuplicate",
+				Message: "node selectors should be unique across all pools, but pool-5 has an intersection",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
+		Entry("pools with several partition keys", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+								"some-key-2": "a",
+							},
+						},
+						{
+							Name:             "pool-2",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+								"some-key-2": "b",
+							},
+						},
+						{
+							Name:             "pool-3",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "3",
+								"some-key-2": "c",
+							},
+						},
+						{
+							Name:             "pool-4",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+								"some-key-2": "d",
+							},
+						},
+						{
+							Name:             "pool-5",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+								"some-key-2": "e",
+							},
+						},
+					},
+				},
+			},
+		}, nil),
+		Entry("pools with omitted partition keys", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+								"some-key-2": "a",
+							},
+						},
+						{
+							Name:             "pool-2",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+							},
+						},
+						{
+							Name:             "pool-3",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "3",
+								"some-key-2": "c",
+							},
+						},
+						{
+							Name:             "pool-4",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-2": "d",
+							},
+						},
+						{
+							Name:             "pool-5",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+								"some-key-2": "e",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueNotFound",
+				Message: "pool pool-2 doesn't specify all partition keys [some-key-1 some-key-2]",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+			{
+				Type:    "FieldValueNotFound",
+				Message: "pool pool-4 doesn't specify all partition keys [some-key-1 some-key-2]",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
+		Entry("pools with not listed partition key selectors", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+						"some-key-2",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+								"some-key-2": "a",
+							},
+						},
+						{
+							Name:             "pool-2",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+								"some-key-2": "b",
+							},
+						},
+						{
+							Name:             "pool-3",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "3",
+								"some-key-2": "c",
+							},
+						},
+						{
+							Name:             "pool-4",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "4",
+								"some-key-2": "d",
+								"some-key-3": "4a",
+							},
+						},
+						{
+							Name:             "pool-5",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+								"some-key-2": "e",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueNotFound",
+				Message: "node selectors should specify all partition keys, but pool-4 has an additional label: some-key-3",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+			{
+				Type:    "FieldValueNotFound",
+				Message: "pool pool-4 doesn't specify all partition keys [some-key-1 some-key-2]",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
+	)
+
 	Context("with TLSConfiguration", func() {
 		DescribeTable("should reject", func(tlsConfiguration *v1.TLSConfiguration, expectedErrorMessage string, indexInField int) {
 			causes := validateTLSConfiguration(tlsConfiguration)

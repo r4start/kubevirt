@@ -121,6 +121,7 @@
 | cluster:kubevirt_virt_handler_pods_running:count | Recording rule | Gauge | The number of virt-handler pods that are running. |
 | cluster:kubevirt_virt_handler_ready:sum | Recording rule | Gauge | The number of virt-handler pods that are ready. |
 | cluster:kubevirt_virt_handler_up:sum | Recording rule | Gauge | The number of virt-handler pods that are up. |
+| cluster:kubevirt_virt_handler_up_by_pool:sum | Recording rule | Gauge | The number of virt-handler pods that are up in each pool. |
 | cluster:kubevirt_virt_operator_leading:sum | Recording rule | Gauge | The number of virt-operator pods that are leading. |
 | cluster:kubevirt_virt_operator_pods_running:count | Recording rule | Gauge | The number of virt-operator pods that are running. |
 | cluster:kubevirt_virt_operator_ready:sum | Recording rule | Gauge | The number of virt-operator pods that are ready. |
@@ -135,7 +136,6 @@
 | kubevirt_virt_controller_ready | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_controller_ready:sum. |
 | kubevirt_virt_controller_up | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_controller_up:sum. |
 | kubevirt_virt_handler_up | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_handler_up:sum. |
-| kubevirt_virt_handler_up_by_pool | Recording rule | Gauge | The number of virt-handler pods that are up in each pool. |
 | kubevirt_virt_operator_leading | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_operator_leading:sum. |
 | kubevirt_virt_operator_ready | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_operator_ready:sum. |
 | kubevirt_virt_operator_up | Recording rule | Gauge | [Deprecated] Replaced by cluster:kubevirt_virt_operator_up:sum. |

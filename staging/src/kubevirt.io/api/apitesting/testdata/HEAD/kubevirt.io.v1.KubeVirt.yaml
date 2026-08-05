@@ -290,10 +290,13 @@ spec:
       resourceType: resourceTypeValue
       type: typeValue
   handlerPools:
-  - name: nameValue
-    nodeSelector:
-      nodeSelectorKey: nodeSelectorValue
-    virtHandlerImage: virtHandlerImageValue
+    partitionKeys:
+    - partitionKeysValue
+    pools:
+    - name: nameValue
+      nodeSelector:
+        nodeSelectorKey: nodeSelectorValue
+      virtHandlerImage: virtHandlerImageValue
   imagePullPolicy: imagePullPolicyValue
   imagePullSecrets:
   - name: nameValue
