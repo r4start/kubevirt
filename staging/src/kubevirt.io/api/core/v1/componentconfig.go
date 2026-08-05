@@ -67,3 +67,16 @@ type HandlerPoolConfig struct {
 	// +kubebuilder:validation:MinProperties=1
 	NodeSelector map[string]string `json:"nodeSelector"`
 }
+
+type HandlerPoolsConfig struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=set
+	PartitionKeys []string `json:"partitionKeys"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Pools []HandlerPoolConfig `json:"pools"`
+}
