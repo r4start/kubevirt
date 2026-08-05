@@ -454,6 +454,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		corev1.HPETTimer{}.OpenAPIModelName():                                                             schema_kubevirtio_api_core_v1_HPETTimer(ref),
 		corev1.Handler{}.OpenAPIModelName():                                                               schema_kubevirtio_api_core_v1_Handler(ref),
 		corev1.HandlerPoolConfig{}.OpenAPIModelName():                                                     schema_kubevirtio_api_core_v1_HandlerPoolConfig(ref),
+		corev1.HandlerPoolsConfig{}.OpenAPIModelName():                                                    schema_kubevirtio_api_core_v1_HandlerPoolsConfig(ref),
 		corev1.HostDevice{}.OpenAPIModelName():                                                            schema_kubevirtio_api_core_v1_HostDevice(ref),
 		corev1.HostDisk{}.OpenAPIModelName():                                                              schema_kubevirtio_api_core_v1_HostDisk(ref),
 		corev1.HotplugVolumeSource{}.OpenAPIModelName():                                                   schema_kubevirtio_api_core_v1_HotplugVolumeSource(ref),
@@ -22064,6 +22065,58 @@ func schema_kubevirtio_api_core_v1_HandlerPoolConfig(ref common.ReferenceCallbac
 	}
 }
 
+func schema_kubevirtio_api_core_v1_HandlerPoolsConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"partitionKeys": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"pools": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(corev1.HandlerPoolConfig{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"partitionKeys", "pools"},
+			},
+		},
+		Dependencies: []string{
+			corev1.HandlerPoolConfig{}.OpenAPIModelName()},
+	}
+}
+
 func schema_kubevirtio_api_core_v1_HostDevice(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -23642,22 +23695,9 @@ func schema_kubevirtio_api_core_v1_KubeVirtSpec(ref common.ReferenceCallback) co
 						},
 					},
 					"handlerPools": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "HandlerPools allows specifying different virt-handler images for different sets of nodes.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(corev1.HandlerPoolConfig{}.OpenAPIModelName()),
-									},
-								},
-							},
+							Ref:         ref(corev1.HandlerPoolsConfig{}.OpenAPIModelName()),
 						},
 					},
 					"customizeComponents": {
@@ -23670,7 +23710,7 @@ func schema_kubevirtio_api_core_v1_KubeVirtSpec(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			v1.LocalObjectReference{}.OpenAPIModelName(), corev1.ComponentConfig{}.OpenAPIModelName(), corev1.CustomizeComponents{}.OpenAPIModelName(), corev1.HandlerPoolConfig{}.OpenAPIModelName(), corev1.KubeVirtCertificateRotateStrategy{}.OpenAPIModelName(), corev1.KubeVirtConfiguration{}.OpenAPIModelName(), corev1.KubeVirtWorkloadUpdateStrategy{}.OpenAPIModelName()},
+			v1.LocalObjectReference{}.OpenAPIModelName(), corev1.ComponentConfig{}.OpenAPIModelName(), corev1.CustomizeComponents{}.OpenAPIModelName(), corev1.HandlerPoolsConfig{}.OpenAPIModelName(), corev1.KubeVirtCertificateRotateStrategy{}.OpenAPIModelName(), corev1.KubeVirtConfiguration{}.OpenAPIModelName(), corev1.KubeVirtWorkloadUpdateStrategy{}.OpenAPIModelName()},
 	}
 }
 

@@ -169,7 +169,7 @@ type KubeVirtDeploymentConfig struct {
 	// environment variables from virt-operator to pass along
 	PassthroughEnvVars map[string]string `json:"passthroughEnvVars,omitempty" optional:"true"`
 
-	HandlerPools []HandlerPoolConfig `json:"handlerPools,omitempty" optional:"true"`
+	HandlerPools HandlersPoolConfig `json:"handlerPools,omitempty" optional:"true"`
 }
 
 type HandlerPoolConfig struct {
@@ -185,6 +185,11 @@ type HandlerPoolConfig struct {
 	// to be scheduled on that node. This is also used to match VMIs to determine which
 	// virt-launcher image to use.
 	NodeSelector map[string]string `json:"nodeSelector"`
+}
+
+type HandlersPoolConfig struct {
+	PartitionKeys []string            `json:"partitionKeys"`
+	Pools         []HandlerPoolConfig `json:"pools"`
 }
 
 var DefaultEnvVarManager EnvVarManager = EnvVarManagerImpl{}
@@ -237,11 +242,12 @@ func GetTargetConfigFromKVWithEnvVarManager(kv *v1.KubeVirt, envVarManager EnvVa
 		}
 	}
 
-	var handlerPools []HandlerPoolConfig
+	var handlerPools HandlersPoolConfig
 	if isFeatureGateEnabledInKvConfig(&kv.Spec.Configuration, featuregate.HandlerPoolsGate) {
 		additionalProperties[AdditionalPropertiesHandlerPoolsEnabled] = ""
-		for _, pool := range kv.Spec.HandlerPools {
-			handlerPools = append(handlerPools, HandlerPoolConfig{
+		handlerPools.PartitionKeys = append(handlerPools.PartitionKeys, kv.Spec.HandlerPools.PartitionKeys...)
+		for _, pool := range kv.Spec.HandlerPools.Pools {
+			handlerPools.Pools = append(handlerPools.Pools, HandlerPoolConfig{
 				Name:             pool.Name,
 				VirtHandlerImage: pool.VirtHandlerImage,
 				NodeSelector:     pool.NodeSelector,
