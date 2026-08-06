@@ -45,7 +45,7 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/virt-operator/resource/apply"
-	install "kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
+	"kubevirt.io/kubevirt/pkg/virt-operator/resource/generate/install"
 	"kubevirt.io/kubevirt/pkg/virt-operator/util"
 	operatorutil "kubevirt.io/kubevirt/pkg/virt-operator/util"
 )
@@ -971,7 +971,7 @@ func (c *KubeVirtController) loadInstallStrategy(kv *v1.KubeVirt) (*install.Stra
 	}
 
 	// 4. execute a job to generate the install strategy for the target version of KubeVirt that's being installed/updated
-	job, err := c.generateInstallStrategyJob(kv.Spec.Infra, config)
+	job, err := c.generateInstallStrategyJob(kv, config)
 	if err != nil {
 		return nil, true, err
 	}
