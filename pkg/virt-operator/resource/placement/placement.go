@@ -20,10 +20,14 @@
 package placement
 
 import (
+	"slices"
+
 	corev1 "k8s.io/api/core/v1"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
+
+	"kubevirt.io/kubevirt/pkg/virt-operator/util"
 )
 
 type DefaultInfraComponentsNodePlacement int
@@ -40,11 +44,12 @@ const (
 
 // InjectPlacementMetadata merges all Tolerations, Affinity and NodeSelectors from NodePlacement into pod spec
 func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
+	var componentConfig *v1.ComponentConfig
+
 	if podSpec == nil {
 		podSpec = &corev1.PodSpec{}
 	}
 
-	var componentConfig *v1.ComponentConfig
 	if kv != nil {
 		switch nodePlacementOption {
 		case AnyNode:
@@ -53,6 +58,7 @@ func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlace
 			componentConfig = kv.Spec.Infra
 		}
 	}
+
 	if componentConfig == nil || componentConfig.NodePlacement == nil {
 		switch nodePlacementOption {
 		case AnyNode:
@@ -153,10 +159,7 @@ func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlace
 						if podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
 							podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nodePlacement.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.DeepCopy()
 						} else {
-							// merge the list of terms from NodePlacement into podSpec
-							for _, term := range nodePlacement.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-								podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, term)
-							}
+							mergeNodeAffinities(kv, podSpec, nodePlacement.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, nodePlacementOption)
 						}
 					}
 
@@ -209,4 +212,45 @@ func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlace
 			podSpec.Tolerations = append(podSpec.Tolerations, toleration)
 		}
 	}
+}
+
+func mergeNodeAffinities(
+	kv *v1.KubeVirt,
+	podSpec *corev1.PodSpec,
+	selectors []corev1.NodeSelectorTerm,
+	nodePlacementOption DefaultInfraComponentsNodePlacement,
+) {
+	handlerPoolsEnabled := false
+	if kv != nil {
+		cfg := util.GetTargetConfigFromKV(kv)
+		handlerPoolsEnabled = cfg.HandlerPoolsEnabled()
+	}
+
+	if !handlerPoolsEnabled || nodePlacementOption != AnyNode {
+		// merge the list of terms from NodePlacement into podSpec
+		newSelectors := slices.Concat(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
+		podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectors
+		return
+	}
+
+	newSelectors := andNodeSelectorTerms(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
+	podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectors
+}
+
+func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
+	out := make([]corev1.NodeSelectorTerm, 0, len(firstList)*len(secondList))
+	for _, ta := range firstList {
+		for _, tb := range secondList {
+			combined := corev1.NodeSelectorTerm{
+				MatchExpressions: make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchExpressions)+len(tb.MatchExpressions)),
+				MatchFields:      make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchFields)+len(tb.MatchFields)),
+			}
+			combined.MatchExpressions = append(combined.MatchExpressions, ta.MatchExpressions...)
+			combined.MatchExpressions = append(combined.MatchExpressions, tb.MatchExpressions...)
+			combined.MatchFields = append(combined.MatchFields, ta.MatchFields...)
+			combined.MatchFields = append(combined.MatchFields, tb.MatchFields...)
+			out = append(out, combined)
+		}
+	}
+	return out
 }

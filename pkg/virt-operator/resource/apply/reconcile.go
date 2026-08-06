@@ -384,6 +384,10 @@ func (r *Reconciler) Sync(queue workqueue.TypedRateLimitingInterface[string]) (b
 	if !util.IsValidLabel(r.kv.Spec.ProductComponent) {
 		log.Log.Errorf("invalid kubevirt.spec.productComponent: labels must be 63 characters or less, begin and end with alphanumeric characters, and contain only dot, hyphen or underscore")
 	}
+	if err := util.CheckHandlerPoolsNodeSelectorsForConflicts(r.kv); err != nil {
+		log.Log.Errorf("there are conflicts between handler pools and workloads: %+v", err)
+		return false, err
+	}
 
 	targetVersion := r.kv.Status.TargetKubeVirtVersion
 	targetImageRegistry := r.kv.Status.TargetKubeVirtRegistry
