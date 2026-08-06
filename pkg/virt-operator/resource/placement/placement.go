@@ -39,11 +39,20 @@ const (
 )
 
 // InjectPlacementMetadata merges all Tolerations, Affinity and NodeSelectors from NodePlacement into pod spec
-func InjectPlacementMetadata(componentConfig *v1.ComponentConfig, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
+func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
 	if podSpec == nil {
 		podSpec = &corev1.PodSpec{}
 	}
 
+	var componentConfig *v1.ComponentConfig
+	if kv != nil {
+		switch nodePlacementOption {
+		case AnyNode:
+			componentConfig = kv.Spec.Workloads
+		case RequireControlPlanePreferNonWorker:
+			componentConfig = kv.Spec.Infra
+		}
+	}
 	if componentConfig == nil || componentConfig.NodePlacement == nil {
 		switch nodePlacementOption {
 		case AnyNode:
