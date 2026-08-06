@@ -19,16 +19,20 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	v1 "kubevirt.io/api/core/v1"
 
 	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
+
+	v1 "kubevirt.io/api/core/v1"
+
+	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 )
 
 var _ = Describe("Operator Config", func() {
@@ -424,4 +428,168 @@ var _ = Describe("Operator Config", func() {
 					version:   "latest",
 				}))
 	})
+
+	DescribeTable("CheckHandlerPoolsNodeSelectorsForConflicts", func(kv *v1.KubeVirt, expectedError error) {
+		if err := CheckHandlerPoolsNodeSelectorsForConflicts(kv); expectedError != nil {
+			Expect(err).To(Equal(expectedError))
+		} else {
+			Expect(err).ToNot(HaveOccurred())
+		}
+	},
+		Entry("nil object", nil, nil),
+		Entry("handler pools are not enabled",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{},
+						},
+					},
+				},
+			},
+			nil),
+		Entry("empty workload node selectors",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.HandlerPoolsGate},
+						},
+					},
+					Workloads: &v1.ComponentConfig{
+						NodePlacement: &v1.NodePlacement{
+							NodeSelector: make(map[string]string),
+						},
+					},
+					HandlerPools: &v1.HandlerPoolsConfig{
+						PartitionKeys: []string{"some-key1"},
+						Pools: []v1.HandlerPoolConfig{
+							{
+								Name: "pool-1",
+								NodeSelector: map[string]string{
+									"some-key1": "a",
+								},
+							},
+						},
+					},
+				},
+			},
+			nil),
+		Entry("conflicting OS label",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.HandlerPoolsGate},
+						},
+					},
+					Workloads: &v1.ComponentConfig{
+						NodePlacement: &v1.NodePlacement{
+							NodeSelector: make(map[string]string),
+						},
+					},
+					HandlerPools: &v1.HandlerPoolsConfig{
+						PartitionKeys: []string{k8sv1.LabelOSStable},
+						Pools: []v1.HandlerPoolConfig{
+							{
+								Name: "pool-1",
+								NodeSelector: map[string]string{
+									k8sv1.LabelOSStable: "some-os",
+								},
+							},
+						},
+					},
+				},
+			},
+			errors.New("a handler pool pool-1 has a conflicting selector kubernetes.io/os with the default OS selector")),
+		Entry("conflicting labels",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.HandlerPoolsGate},
+						},
+					},
+					Workloads: &v1.ComponentConfig{
+						NodePlacement: &v1.NodePlacement{
+							NodeSelector: map[string]string{
+								"some-key1": "some-other-value",
+							},
+						},
+					},
+					HandlerPools: &v1.HandlerPoolsConfig{
+						PartitionKeys: []string{"some-key1"},
+						Pools: []v1.HandlerPoolConfig{
+							{
+								Name: "pool-1",
+								NodeSelector: map[string]string{
+									"some-key1": "a-value",
+								},
+							},
+						},
+					},
+				},
+			},
+			errors.New("a handler pool pool-1 has a conflicting selector some-key1 with workloads selector")),
+		Entry("conflicting OS label because of the default",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.HandlerPoolsGate},
+						},
+					},
+					Workloads: &v1.ComponentConfig{
+						NodePlacement: &v1.NodePlacement{
+							NodeSelector: map[string]string{
+								"some-key1": "a-value",
+							},
+						},
+					},
+					HandlerPools: &v1.HandlerPoolsConfig{
+						PartitionKeys: []string{"some-key1", k8sv1.LabelOSStable},
+						Pools: []v1.HandlerPoolConfig{
+							{
+								Name: "pool-1",
+								NodeSelector: map[string]string{
+									"some-key1":         "a-value",
+									k8sv1.LabelOSStable: "some-os",
+								},
+							},
+						},
+					},
+				},
+			},
+			errors.New("a handler pool pool-1 has a conflicting selector kubernetes.io/os with the default OS selector")),
+		Entry("correct pools with OS label",
+			&v1.KubeVirt{
+				Spec: v1.KubeVirtSpec{
+					Configuration: v1.KubeVirtConfiguration{
+						DeveloperConfiguration: &v1.DeveloperConfiguration{
+							FeatureGates: []string{featuregate.HandlerPoolsGate},
+						},
+					},
+					Workloads: &v1.ComponentConfig{
+						NodePlacement: &v1.NodePlacement{
+							NodeSelector: map[string]string{
+								"some-key1": "a-value",
+							},
+						},
+					},
+					HandlerPools: &v1.HandlerPoolsConfig{
+						PartitionKeys: []string{"some-key1", k8sv1.LabelOSStable},
+						Pools: []v1.HandlerPoolConfig{
+							{
+								Name: "pool-1",
+								NodeSelector: map[string]string{
+									"some-key1":         "a-value",
+									k8sv1.LabelOSStable: "linux",
+								},
+							},
+						},
+					},
+				},
+			},
+			nil),
+	)
 })

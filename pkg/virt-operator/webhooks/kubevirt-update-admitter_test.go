@@ -755,6 +755,70 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 				Field:   "spec.handlerPools.pools.nodeSelector",
 			},
 		}),
+		Entry("node selectors and workload selectors conflict", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				Workloads: &v1.ComponentConfig{
+					NodePlacement: &v1.NodePlacement{
+						NodeSelector: map[string]string{
+							"some-key-1": "5",
+						},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueInvalid",
+				Message: "node selectors has a conflict with the workload selectors: a handler pool pool-1 has a conflicting selector some-key-1 with workloads selector",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
+		Entry("node selectors and workload selectors no conflict on empty map", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				Workloads: &v1.ComponentConfig{
+					NodePlacement: &v1.NodePlacement{
+						NodeSelector: map[string]string{},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name:             "pool-1",
+							VirtHandlerImage: "",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+					},
+				},
+			},
+		}, nil),
 	)
 
 	Context("with TLSConfiguration", func() {
