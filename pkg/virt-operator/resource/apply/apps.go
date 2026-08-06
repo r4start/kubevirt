@@ -75,7 +75,7 @@ func injectDeploymentPlacement(kv *v1.KubeVirt, deployment *appsv1.Deployment) {
 			nodePlacementOption = placement.AnyNode
 		}
 	}
-	placement.InjectPlacementMetadata(componentConfig, &deployment.Spec.Template.Spec, nodePlacementOption)
+	placement.InjectComponentPlacementMetadata(componentConfig, &deployment.Spec.Template.Spec, nodePlacementOption)
 }
 
 // applyExportProxyReplicaPolicy sets Spec.Replicas before syncDeployment.
@@ -369,7 +369,7 @@ func (r *Reconciler) syncDaemonSet(daemonSet *appsv1.DaemonSet) (bool, error) {
 
 	injectOperatorMetadata(kv, &daemonSet.ObjectMeta, imageTag, imageRegistry, id, true)
 	injectOperatorMetadata(kv, &daemonSet.Spec.Template.ObjectMeta, imageTag, imageRegistry, id, false)
-	placement.InjectPlacementMetadata(kv.Spec.Workloads, &daemonSet.Spec.Template.Spec, placement.AnyNode)
+	placement.InjectPlacementMetadata(kv, &daemonSet.Spec.Template.Spec, placement.AnyNode)
 
 	if strings.HasPrefix(daemonSet.GetName(), components.VirtHandlerName) {
 		setMaxDevices(r.kv, daemonSet)
