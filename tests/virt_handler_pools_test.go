@@ -875,7 +875,8 @@ func generatePools(
 	poolSelectorLabelName string,
 ) (*k6tv1.HandlerPoolsConfig, error) {
 	handlerPoolsConfig := &k6tv1.HandlerPoolsConfig{
-		Pools: make([]k6tv1.HandlerPoolConfig, 0, poolsCount),
+		PartitionKeys: []string{poolSelectorLabelName},
+		Pools:         make([]k6tv1.HandlerPoolConfig, 0, poolsCount),
 	}
 	for i := range poolsCount {
 		poolName := fmt.Sprintf("%s-%d", poolNamePrefix, i)
