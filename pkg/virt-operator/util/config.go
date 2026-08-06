@@ -816,3 +816,46 @@ func DigestFromImageName(name string) (digest string) {
 
 	return
 }
+
+func CheckHandlerPoolsNodeSelectorsForConflicts(kv *v1.KubeVirt) error {
+	if !featuregate.IsEnabled(featuregate.HandlerPoolsGate, kv.Spec.Configuration.DeveloperConfiguration) {
+		return nil
+	}
+
+	if kv.Spec.HandlerPools == nil ||
+		len(kv.Spec.HandlerPools.Pools) == 0 {
+		return nil
+	}
+
+	if kv.Spec.Workloads == nil ||
+		kv.Spec.Workloads.NodePlacement == nil ||
+		len(kv.Spec.Workloads.NodePlacement.NodeSelector) == 0 {
+		for _, pool := range kv.Spec.HandlerPools.Pools {
+			if value, exists := pool.NodeSelector[k8sv1.LabelOSStable]; exists && value != "linux" {
+				return fmt.Errorf("a handler pool %s has a conflicting selector %s with the default OS selector", pool.Name, k8sv1.LabelOSStable)
+			}
+		}
+		return nil
+	}
+
+	workloadsSelectors := kv.Spec.Workloads.NodePlacement.NodeSelector
+	for _, pool := range kv.Spec.HandlerPools.Pools {
+		for key, value := range pool.NodeSelector {
+			if _, exists := workloadsSelectors[key]; exists {
+				if workloadsSelectors[key] != value {
+					return fmt.Errorf("a handler pool %s has a conflicting selector %s with workloads selector", pool.Name, key)
+				}
+			}
+		}
+	}
+
+	if _, exists := workloadsSelectors[k8sv1.LabelOSStable]; !exists {
+		for _, pool := range kv.Spec.HandlerPools.Pools {
+			if value, exists := pool.NodeSelector[k8sv1.LabelOSStable]; exists && value != "linux" {
+				return fmt.Errorf("a handler pool %s has a conflicting selector %s with the default OS selector", pool.Name, k8sv1.LabelOSStable)
+			}
+		}
+	}
+
+	return nil
+}
