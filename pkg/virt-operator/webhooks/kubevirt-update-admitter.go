@@ -30,6 +30,7 @@ import (
 
 	kvtls "kubevirt.io/kubevirt/pkg/util/tls"
 	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
+	"kubevirt.io/kubevirt/pkg/virt-operator/util"
 
 	"kubevirt.io/client-go/log"
 
@@ -711,6 +712,14 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 		}
 
 		poolsLabels[hashedSelector] = struct{}{}
+	}
+
+	if err := util.CheckHandlerPoolsNodeSelectorsForConflicts(config); err != nil {
+		causes = append(causes, metav1.StatusCause{
+			Type:    metav1.CauseTypeFieldValueInvalid,
+			Message: fmt.Sprintf("node selectors has a conflict with the workload selectors: %v", err),
+			Field:   nodeSelectorField,
+		})
 	}
 
 	return causes
