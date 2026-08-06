@@ -18,8 +18,7 @@ import (
 	operatorutil "kubevirt.io/kubevirt/pkg/virt-operator/util"
 )
 
-func (c *KubeVirtController) generateInstallStrategyJob(infraPlacement *v1.ComponentConfig, config *operatorutil.KubeVirtDeploymentConfig) (*batchv1.Job, error) {
-
+func (c *KubeVirtController) generateInstallStrategyJob(kv *v1.KubeVirt, config *operatorutil.KubeVirtDeploymentConfig) (*batchv1.Job, error) {
 	operatorImage := config.VirtOperatorImage
 	if operatorImage == "" {
 		operatorImage = fmt.Sprintf("%s/%s%s%s", config.GetImageRegistry(), config.GetImagePrefix(), VirtOperator, components.AddVersionSeparatorPrefix(config.GetOperatorVersion()))
@@ -110,7 +109,7 @@ func (c *KubeVirtController) generateInstallStrategyJob(infraPlacement *v1.Compo
 		},
 	}
 
-	placement.InjectPlacementMetadata(infraPlacement, &job.Spec.Template.Spec, placement.RequireControlPlanePreferNonWorker)
+	placement.InjectPlacementMetadata(kv, &job.Spec.Template.Spec, placement.RequireControlPlanePreferNonWorker)
 	env := job.Spec.Template.Spec.Containers[0].Env
 	extraEnv := util.NewEnvVarMap(config.GetExtraEnv())
 	job.Spec.Template.Spec.Containers[0].Env = append(env, extraEnv...)
