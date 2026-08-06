@@ -818,6 +818,10 @@ func DigestFromImageName(name string) (digest string) {
 }
 
 func CheckHandlerPoolsNodeSelectorsForConflicts(kv *v1.KubeVirt) error {
+	if kv == nil {
+		return nil
+	}
+
 	if !featuregate.IsEnabled(featuregate.HandlerPoolsGate, kv.Spec.Configuration.DeveloperConfiguration) {
 		return nil
 	}
