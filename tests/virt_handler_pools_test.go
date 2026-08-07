@@ -326,6 +326,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 
 		pools.Pools[0].NodeSelector[secondLabel] = ""
+		pools.PartitionKeys = append(pools.PartitionKeys, secondLabel)
 
 		kv, err := deploySpecificPools(ctx, client, pools)
 		Expect(err).ToNot(HaveOccurred())
