@@ -216,7 +216,9 @@ func IsVirtHandlerReady(kv *v1.KubeVirt, stores Stores, daemonset *appsv1.Daemon
 		return false
 	}
 
-	if !strings.HasPrefix(daemonset.Name, virtHandlerDaemonSetNamePrefix) || len(kv.Spec.HandlerPools.Pools) == 0 {
+	if !strings.HasPrefix(daemonset.Name, virtHandlerDaemonSetNamePrefix) ||
+		kv.Spec.HandlerPools == nil ||
+		len(kv.Spec.HandlerPools.Pools) == 0 {
 		return false
 	}
 
