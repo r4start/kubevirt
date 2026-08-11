@@ -626,50 +626,69 @@ func (tree *nodeSelectorTermsTree) Insert(terms map[string]string) error {
 
 func (tree *nodeSelectorTermsTree) Terms() ([]corev1.NodeSelectorTerm, error) {
 	var (
-		result []corev1.NodeSelectorTerm
-		prefix = make([]string, 0)
+		terms []corev1.NodeSelectorTerm
 	)
 
-	if err := tree.dfs(&result, tree.root, prefix); err != nil {
-		return nil, err
+	if len(tree.root.children) == 0 {
+		return terms, nil
 	}
 
-	return result, nil
-}
-
-func (tree *nodeSelectorTermsTree) dfs(selectors *[]corev1.NodeSelectorTerm, node *treeNode, prefix []string) error {
-	if len(node.children) == 0 {
-		return nil
+	type termData struct {
+		node   *treeNode
+		prefix []string
+		level  int
 	}
 
-	values := slices.Collect(maps.Keys(node.children))
-	slices.Sort(values)
-
-	for _, value := range values {
-		if err := tree.dfs(selectors, node.children[value], append(prefix, value)); err != nil {
-			return err
-		}
-	}
-
-	currentLevel := len(prefix)
-	selector := corev1.NodeSelectorTerm{
-		MatchExpressions: []corev1.NodeSelectorRequirement{
-			{
-				Key:      tree.orderedKeys[currentLevel],
-				Operator: corev1.NodeSelectorOpNotIn,
-				Values:   values,
-			},
+	nodesToProcess := []termData{
+		{
+			node:   tree.root,
+			prefix: make([]string, 0),
+			level:  0,
 		},
 	}
 
-	for i := range currentLevel {
-		selector.MatchExpressions = append(selector.MatchExpressions, corev1.NodeSelectorRequirement{
-			Key:      tree.orderedKeys[i],
-			Operator: corev1.NodeSelectorOpIn,
-			Values:   []string{prefix[i]},
-		})
+	for len(nodesToProcess) != 0 {
+		lastElementIndex := len(nodesToProcess) - 1
+		node := nodesToProcess[lastElementIndex]
+		nodesToProcess = nodesToProcess[:lastElementIndex]
+
+		values := slices.Collect(maps.Keys(node.node.children))
+		if len(values) == 0 {
+			// This is a leaf. We don't need to do anything.
+			continue
+		}
+
+		slices.Sort(values)
+
+		for _, value := range values {
+			newPrefix := slices.Clone(node.prefix)
+			newPrefix = append(newPrefix, value)
+
+			nodesToProcess = append(nodesToProcess, termData{
+				node:   node.node.children[value],
+				prefix: newPrefix,
+				level:  node.level + 1,
+			})
+		}
+
+		selector := corev1.NodeSelectorTerm{
+			MatchExpressions: []corev1.NodeSelectorRequirement{
+				{
+					Key:      tree.orderedKeys[node.level],
+					Operator: corev1.NodeSelectorOpNotIn,
+					Values:   values,
+				},
+			},
+		}
+		for i := range node.level {
+			selector.MatchExpressions = append(selector.MatchExpressions, corev1.NodeSelectorRequirement{
+				Key:      tree.orderedKeys[i],
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{node.prefix[i]},
+			})
+		}
+		terms = append(terms, selector)
 	}
 
-	*selectors = append(*selectors, selector)
-	return nil
+	return terms, nil
 }
