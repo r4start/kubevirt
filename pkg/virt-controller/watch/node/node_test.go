@@ -426,6 +426,43 @@ var _ = Describe("Node controller with", func() {
 			Expect(running).To(BeTrue())
 		})
 
+		It("should evaluate required node affinity when determining daemonset eligibility", func() {
+			node := NewHealthyNode("testnode")
+			node.Labels["pool"] = "a"
+
+			eligible := HealthVirtHandlerDS()
+			eligible.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "a"}
+
+			ineligible := UnHealthVirtHandlerDS()
+			ineligible.Spec.Template.Spec.Affinity = &k8sv1.Affinity{
+				NodeAffinity: &k8sv1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &k8sv1.NodeSelector{
+						NodeSelectorTerms: []k8sv1.NodeSelectorTerm{
+							{
+								MatchExpressions: []k8sv1.NodeSelectorRequirement{
+									{
+										Key:      "pool",
+										Operator: k8sv1.NodeSelectorOpNotIn,
+										Values:   []string{"a"},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			kubeClient.Fake.PrependReactor("list", "daemonsets",
+				func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*eligible, *ineligible}}, nil
+				},
+			)
+
+			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(running).To(BeTrue())
+		})
+
 		It("should return an error when multiple daemonsets are eligible on the node", func() {
 			node := NewHealthyNode("testnode")
 			node.Labels["pool"] = "a"
