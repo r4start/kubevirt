@@ -1353,6 +1353,10 @@ k8s.io/dynamic-resource-allocation/devicemetadata
 k8s.io/dynamic-resource-allocation/kubeletplugin
 k8s.io/dynamic-resource-allocation/resourceclaim
 k8s.io/dynamic-resource-allocation/resourceslice
+# k8s.io/component-helpers v0.36.4
+## explicit; go 1.26.0
+k8s.io/component-helpers/scheduling/corev1
+k8s.io/component-helpers/scheduling/corev1/nodeaffinity
 # k8s.io/klog/v2 v2.140.0
 ## explicit; go 1.21
 k8s.io/klog/v2

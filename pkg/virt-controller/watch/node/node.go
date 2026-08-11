@@ -11,12 +11,14 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
+	"k8s.io/klog/v2"
 
 	virtv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
@@ -486,47 +488,21 @@ func isNodeUnresponsive(node *v1.Node, timeout time.Duration) (bool, error) {
 func isDaemonSetEligibleOnNode(ds *appsv1.DaemonSet, node *v1.Node) bool {
 	pod := &v1.Pod{Spec: ds.Spec.Template.Spec}
 
-	if len(pod.Spec.NodeSelector) > 0 {
-		sel := labels.SelectorFromSet(pod.Spec.NodeSelector)
-		if !sel.Matches(labels.Set(node.Labels)) {
-			return false
-		}
-	}
-
-	if !toleratesNoScheduleOrNoExecute(node.Spec.Taints, pod.Spec.Tolerations) {
+	matches, err := nodeaffinity.GetRequiredNodeAffinity(pod).Match(node)
+	if err != nil || !matches {
 		return false
 	}
 
-	return true
-}
+	_, untolerated := corev1helpers.FindMatchingUntoleratedTaint(
+		klog.Background(),
+		node.Spec.Taints,
+		pod.Spec.Tolerations,
+		func(taint *v1.Taint) bool {
+			return taint.Effect == v1.TaintEffectNoSchedule ||
+				taint.Effect == v1.TaintEffectNoExecute
+		},
+		false, // use only Equal/NotEqual taints matching.
+	)
 
-func toleratesNoScheduleOrNoExecute(taints []v1.Taint, tolerations []v1.Toleration) bool {
-	for _, taint := range taints {
-		if taint.Effect != v1.TaintEffectNoSchedule && taint.Effect != v1.TaintEffectNoExecute {
-			continue
-		}
-		if !isTaintTolerated(taint, tolerations) {
-			return false
-		}
-	}
-	return true
-}
-
-func isTaintTolerated(taint v1.Taint, tolerations []v1.Toleration) bool {
-	for _, tol := range tolerations {
-		if tol.Effect != "" && tol.Effect != taint.Effect {
-			continue
-		}
-		op := tol.Operator
-		if op == "" {
-			op = v1.TolerationOpEqual
-		}
-		if op == v1.TolerationOpExists && (tol.Key == "" || tol.Key == taint.Key) {
-			return true
-		}
-		if op == v1.TolerationOpEqual && tol.Key == taint.Key && tol.Value == taint.Value {
-			return true
-		}
-	}
-	return false
+	return !untolerated
 }
