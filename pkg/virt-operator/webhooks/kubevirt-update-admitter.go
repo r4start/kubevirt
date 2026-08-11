@@ -20,11 +20,10 @@
 package webhooks
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -42,6 +41,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes"
 
@@ -610,8 +610,7 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 	)
 
 	if !hasFeatureGateEnabled(&config.Spec.Configuration, featuregate.HandlerPoolsGate) ||
-		config.Spec.HandlerPools == nil ||
-		len(config.Spec.HandlerPools.Pools) == 0 {
+		config.Spec.HandlerPools == nil {
 		return causes
 	}
 
@@ -637,16 +636,34 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 				Field:   partitionKeysField,
 			})
 		}
+		if errorsMessages := validation.IsQualifiedName(key); errorsMessages != nil {
+			causes = append(causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeFieldValueInvalid,
+				Message: fmt.Sprintf("partitionKeys should be valid qualified names: %s", key),
+				Field:   partitionKeysField,
+			})
+		}
 		partitionKeys[key] = struct{}{}
 	}
 
-	if len(causes) != 0 {
+	if len(causes) != 0 || len(poolsConfig.Pools) == 0 {
 		return causes
+	}
+
+	for i, pool := range poolsConfig.Pools {
+		for j := i + 1; j < len(poolsConfig.Pools); j += 1 {
+			if maps.Equal(pool.NodeSelector, poolsConfig.Pools[j].NodeSelector) {
+				causes = append(causes, metav1.StatusCause{
+					Type:    metav1.CauseTypeFieldValueDuplicate,
+					Message: fmt.Sprintf("pools selectors should be unique, but we have non unique selectors between %s and %s", pool.Name, poolsConfig.Pools[j].Name),
+					Field:   nodeSelectorField,
+				})
+			}
+		}
 	}
 
 	poolsCount := len(poolsConfig.Pools)
 	poolsNames := make(map[string]struct{}, poolsCount)
-	poolsLabels := make(map[uint64]struct{}, poolsCount)
 	for _, pool := range poolsConfig.Pools {
 		if _, found := poolsNames[pool.Name]; found {
 			causes = append(causes, metav1.StatusCause{
@@ -670,6 +687,22 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 				value: value,
 			})
 
+			if errorsMessages := validation.IsQualifiedName(label); errorsMessages != nil {
+				causes = append(causes, metav1.StatusCause{
+					Type:    metav1.CauseTypeFieldValueInvalid,
+					Message: fmt.Sprintf("node selector label should be valid qualified names: %s", label),
+					Field:   nodeSelectorField,
+				})
+			}
+
+			if errorsMessages := validation.IsValidLabelValue(value); errorsMessages != nil {
+				causes = append(causes, metav1.StatusCause{
+					Type:    metav1.CauseTypeFieldValueInvalid,
+					Message: fmt.Sprintf("node selector label's value should be valid: %s", value),
+					Field:   nodeSelectorField,
+				})
+			}
+
 			if _, found := partitionKeys[label]; !found {
 				causes = append(causes, metav1.StatusCause{
 					Type:    metav1.CauseTypeFieldValueNotFound,
@@ -686,32 +719,6 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 				Field:   nodeSelectorField,
 			})
 		}
-
-		sortedLabels = slices.SortedStableFunc(slices.Values(sortedLabels), func(left selector, right selector) int {
-			result := cmp.Compare(left.key, right.key)
-			if result != 0 {
-				return result
-			}
-			return cmp.Compare(left.value, right.value)
-		})
-
-		hasher := fnv.New64()
-		for _, sel := range sortedLabels {
-			_, _ = hasher.Write([]byte(sel.key))
-			_, _ = hasher.Write([]byte(sel.value))
-		}
-
-		hashedSelector := hasher.Sum64()
-
-		if _, found := poolsLabels[hashedSelector]; found {
-			causes = append(causes, metav1.StatusCause{
-				Type:    metav1.CauseTypeFieldValueDuplicate,
-				Message: fmt.Sprintf("node selectors should be unique across all pools, but %s has an intersection", pool.Name),
-				Field:   nodeSelectorField,
-			})
-		}
-
-		poolsLabels[hashedSelector] = struct{}{}
 	}
 
 	if err := util.CheckHandlerPoolsNodeSelectorsForConflicts(config); err != nil {

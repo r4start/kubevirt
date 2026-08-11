@@ -245,13 +245,15 @@ func GetTargetConfigFromKVWithEnvVarManager(kv *v1.KubeVirt, envVarManager EnvVa
 	var handlerPools HandlersPoolConfig
 	if isFeatureGateEnabledInKvConfig(&kv.Spec.Configuration, featuregate.HandlerPoolsGate) {
 		additionalProperties[AdditionalPropertiesHandlerPoolsEnabled] = ""
-		handlerPools.PartitionKeys = append(handlerPools.PartitionKeys, kv.Spec.HandlerPools.PartitionKeys...)
-		for _, pool := range kv.Spec.HandlerPools.Pools {
-			handlerPools.Pools = append(handlerPools.Pools, HandlerPoolConfig{
-				Name:             pool.Name,
-				VirtHandlerImage: pool.VirtHandlerImage,
-				NodeSelector:     pool.NodeSelector,
-			})
+		if kv.Spec.HandlerPools != nil {
+			handlerPools.PartitionKeys = append(handlerPools.PartitionKeys, kv.Spec.HandlerPools.PartitionKeys...)
+			for _, pool := range kv.Spec.HandlerPools.Pools {
+				handlerPools.Pools = append(handlerPools.Pools, HandlerPoolConfig{
+					Name:             pool.Name,
+					VirtHandlerImage: pool.VirtHandlerImage,
+					NodeSelector:     pool.NodeSelector,
+				})
+			}
 		}
 	}
 
