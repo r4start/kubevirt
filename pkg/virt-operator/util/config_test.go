@@ -52,7 +52,7 @@ var _ = Describe("Operator Config", func() {
 	}
 
 	Describe("GetPassthroughEnv()", func() {
-		It("should eturn environment variables matching the passthrough prefix (and only those vars)", func() {
+		It("should return environment variables matching the passthrough prefix (and only those vars)", func() {
 			realKey := rand.String(10)
 			passthroughKey := fmt.Sprintf("%s%s", PassthroughEnvPrefix, realKey)
 			otherKey := rand.String(10)

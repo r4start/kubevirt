@@ -307,6 +307,24 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 				},
 			},
 		}, nil),
+		Entry("malformed partition key", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{"bad label for a node"},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueInvalid",
+				Message: "partitionKeys should be valid qualified names: bad label for a node",
+				Field:   "spec.handlerPools.partitionKeys",
+			},
+		}),
 		Entry("too many partition keys", &v1.KubeVirt{
 			Spec: v1.KubeVirtSpec{
 				Configuration: v1.KubeVirtConfiguration{
@@ -336,9 +354,8 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
-							NodeSelector:     nil,
+							Name:         "pool-1",
+							NodeSelector: nil,
 						},
 					},
 				},
@@ -361,9 +378,8 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					PartitionKeys: []string{},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
-							NodeSelector:     nil,
+							Name:         "pool-1",
+							NodeSelector: nil,
 						},
 					},
 				},
@@ -392,9 +408,8 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
-							NodeSelector:     nil,
+							Name:         "pool-1",
+							NodeSelector: nil,
 						},
 					},
 				},
@@ -425,9 +440,8 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
-							NodeSelector:     nil,
+							Name:         "pool-1",
+							NodeSelector: nil,
 						},
 					},
 				},
@@ -452,36 +466,31 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 							},
 						},
 						{
-							Name:             "pool-2",
-							VirtHandlerImage: "",
+							Name: "pool-2",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 							},
 						},
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "3",
 							},
 						},
 						{
-							Name:             "pool-3",
-							VirtHandlerImage: "",
+							Name: "pool-3",
 							NodeSelector: map[string]string{
 								"some-key-1": "4",
 							},
 						},
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "5",
 							},
@@ -501,6 +510,57 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 				Field:   "spec.handlerPools.pools.name",
 			},
 		}),
+		Entry("pools with incorrect labels", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{
+						"some-key-1",
+					},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name: "pool-1",
+							NodeSelector: map[string]string{
+								"some-key-1": "1",
+							},
+						},
+						{
+							Name: "pool-2",
+							NodeSelector: map[string]string{
+								"some-key-1": "2",
+							},
+						},
+						{
+							Name: "pool-3",
+							NodeSelector: map[string]string{
+								"some-key-1":    "3",
+								"bad key value": "4",
+							},
+						},
+					},
+				},
+			},
+		}, []metav1.StatusCause{
+			{
+				Type:    "FieldValueInvalid",
+				Message: "node selector label should be valid qualified names: bad key value",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+			{
+				Type:    "FieldValueNotFound",
+				Message: "node selectors should specify all partition keys, but pool-3 has an additional label: bad key value",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+			{
+				Type:    "FieldValueNotFound",
+				Message: "pool pool-3 doesn't specify all partition keys [some-key-1]",
+				Field:   "spec.handlerPools.pools.nodeSelector",
+			},
+		}),
 		Entry("pools with intersections", &v1.KubeVirt{
 			Spec: v1.KubeVirtSpec{
 				Configuration: v1.KubeVirtConfiguration{
@@ -514,36 +574,31 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 							},
 						},
 						{
-							Name:             "pool-2",
-							VirtHandlerImage: "",
+							Name: "pool-2",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 							},
 						},
 						{
-							Name:             "pool-3",
-							VirtHandlerImage: "",
+							Name: "pool-3",
 							NodeSelector: map[string]string{
 								"some-key-1": "3",
 							},
 						},
 						{
-							Name:             "pool-4",
-							VirtHandlerImage: "",
+							Name: "pool-4",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 							},
 						},
 						{
-							Name:             "pool-5",
-							VirtHandlerImage: "",
+							Name: "pool-5",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 							},
@@ -554,12 +609,12 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 		}, []metav1.StatusCause{
 			{
 				Type:    "FieldValueDuplicate",
-				Message: "node selectors should be unique across all pools, but pool-4 has an intersection",
+				Message: "pools selectors should be unique, but we have non unique selectors between pool-1 and pool-4",
 				Field:   "spec.handlerPools.pools.nodeSelector",
 			},
 			{
 				Type:    "FieldValueDuplicate",
-				Message: "node selectors should be unique across all pools, but pool-5 has an intersection",
+				Message: "pools selectors should be unique, but we have non unique selectors between pool-2 and pool-5",
 				Field:   "spec.handlerPools.pools.nodeSelector",
 			},
 		}),
@@ -577,40 +632,35 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 								"some-key-2": "a",
 							},
 						},
 						{
-							Name:             "pool-2",
-							VirtHandlerImage: "",
+							Name: "pool-2",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 								"some-key-2": "b",
 							},
 						},
 						{
-							Name:             "pool-3",
-							VirtHandlerImage: "",
+							Name: "pool-3",
 							NodeSelector: map[string]string{
 								"some-key-1": "3",
 								"some-key-2": "c",
 							},
 						},
 						{
-							Name:             "pool-4",
-							VirtHandlerImage: "",
+							Name: "pool-4",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 								"some-key-2": "d",
 							},
 						},
 						{
-							Name:             "pool-5",
-							VirtHandlerImage: "",
+							Name: "pool-5",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 								"some-key-2": "e",
@@ -634,38 +684,33 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 								"some-key-2": "a",
 							},
 						},
 						{
-							Name:             "pool-2",
-							VirtHandlerImage: "",
+							Name: "pool-2",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 							},
 						},
 						{
-							Name:             "pool-3",
-							VirtHandlerImage: "",
+							Name: "pool-3",
 							NodeSelector: map[string]string{
 								"some-key-1": "3",
 								"some-key-2": "c",
 							},
 						},
 						{
-							Name:             "pool-4",
-							VirtHandlerImage: "",
+							Name: "pool-4",
 							NodeSelector: map[string]string{
 								"some-key-2": "d",
 							},
 						},
 						{
-							Name:             "pool-5",
-							VirtHandlerImage: "",
+							Name: "pool-5",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 								"some-key-2": "e",
@@ -700,32 +745,28 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 								"some-key-2": "a",
 							},
 						},
 						{
-							Name:             "pool-2",
-							VirtHandlerImage: "",
+							Name: "pool-2",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 								"some-key-2": "b",
 							},
 						},
 						{
-							Name:             "pool-3",
-							VirtHandlerImage: "",
+							Name: "pool-3",
 							NodeSelector: map[string]string{
 								"some-key-1": "3",
 								"some-key-2": "c",
 							},
 						},
 						{
-							Name:             "pool-4",
-							VirtHandlerImage: "",
+							Name: "pool-4",
 							NodeSelector: map[string]string{
 								"some-key-1": "4",
 								"some-key-2": "d",
@@ -733,8 +774,7 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 							},
 						},
 						{
-							Name:             "pool-5",
-							VirtHandlerImage: "",
+							Name: "pool-5",
 							NodeSelector: map[string]string{
 								"some-key-1": "2",
 								"some-key-2": "e",
@@ -775,8 +815,7 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
 							},
@@ -809,10 +848,37 @@ var _ = Describe("Validating KubeVirtUpdate Admitter", func() {
 					},
 					Pools: []v1.HandlerPoolConfig{
 						{
-							Name:             "pool-1",
-							VirtHandlerImage: "",
+							Name: "pool-1",
 							NodeSelector: map[string]string{
 								"some-key-1": "1",
+							},
+						},
+					},
+				},
+			},
+		}, nil),
+		Entry("pools with concatenated selectors", &v1.KubeVirt{
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{"a", "b"},
+					Pools: []v1.HandlerPoolConfig{
+						{
+							Name: "pool-1",
+							NodeSelector: map[string]string{
+								"a": "x",
+								"b": "by",
+							},
+						},
+						{
+							Name: "pool-2",
+							NodeSelector: map[string]string{
+								"a": "xb",
+								"b": "y",
 							},
 						},
 					},
