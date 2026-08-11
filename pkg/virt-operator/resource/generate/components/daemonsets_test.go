@@ -279,9 +279,7 @@ var _ = Describe("Handler DaemonSet", func() {
 			[]corev1.NodeSelectorTerm{
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
 					},
 				},
 				{
@@ -292,7 +290,9 @@ var _ = Describe("Handler DaemonSet", func() {
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
 					},
 				},
 			},
@@ -320,22 +320,13 @@ var _ = Describe("Handler DaemonSet", func() {
 			[]corev1.NodeSelectorTerm{
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"12a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1", "2"}},
 					},
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
-					},
-				},
-				{
-					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"12a", "1a"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
 					},
 				},
 				{
@@ -347,13 +338,22 @@ var _ = Describe("Handler DaemonSet", func() {
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"12a", "1a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
 					},
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1", "2"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"12a"}},
 					},
 				},
 			},
@@ -382,8 +382,7 @@ var _ = Describe("Handler DaemonSet", func() {
 			[]corev1.NodeSelectorTerm{
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a", "b"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a", "b"}},
 					},
 				},
 				{
@@ -394,7 +393,8 @@ var _ = Describe("Handler DaemonSet", func() {
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a", "b"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a", "b"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"a"}},
 					},
 				},
 			},
@@ -457,42 +457,13 @@ var _ = Describe("Handler DaemonSet", func() {
 			[]corev1.NodeSelectorTerm{
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1", "2", "3"}},
 					},
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa", "2aa", "3aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2a"}},
-					},
-				},
-				{
-					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa", "2aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"3a"}},
-					},
-				},
-				{
-					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a", "2a", "3a"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
-					},
-				},
-				{
-					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"3aa"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
-						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
-					},
-				},
-				{
-					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"12a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"3"}},
 					},
 				},
 				{
@@ -504,13 +475,42 @@ var _ = Describe("Handler DaemonSet", func() {
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"12a"}},
-						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"3"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
 					},
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1", "2", "3"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"3aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1a", "2a", "3a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa", "2aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"3a"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa", "2aa", "3aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2a"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1aa"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"1a"}},
 					},
 				},
 			},
@@ -535,13 +535,79 @@ var _ = Describe("Handler DaemonSet", func() {
 			[]corev1.NodeSelectorTerm{
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
 						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a", "b"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+					},
+				},
+			},
+			nil,
+		),
+		Entry("five keys with deep branching",
+			[]string{"key1", "key2", "key3", "key4", "key5"},
+			[]map[string]string{
+				{
+					"key1": "1",
+					"key2": "2",
+					"key3": "3",
+					"key4": "4a",
+					"key5": "5a",
+				},
+				{
+					"key1": "1",
+					"key2": "2",
+					"key3": "3",
+					"key4": "4b",
+					"key5": "5b",
+				},
+			},
+			[]corev1.NodeSelectorTerm{
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key2", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"2"}},
 						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
 					},
 				},
 				{
 					MatchExpressions: []corev1.NodeSelectorRequirement{
-						{Key: "key1", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"1"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"3"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key4", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"4a", "4b"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpIn, Values: []string{"3"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key5", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"5b"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpIn, Values: []string{"3"}},
+						{Key: "key4", Operator: corev1.NodeSelectorOpIn, Values: []string{"4b"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "key5", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"5a"}},
+						{Key: "key1", Operator: corev1.NodeSelectorOpIn, Values: []string{"1"}},
+						{Key: "key2", Operator: corev1.NodeSelectorOpIn, Values: []string{"2"}},
+						{Key: "key3", Operator: corev1.NodeSelectorOpIn, Values: []string{"3"}},
+						{Key: "key4", Operator: corev1.NodeSelectorOpIn, Values: []string{"4a"}},
 					},
 				},
 			},
