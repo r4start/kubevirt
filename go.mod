@@ -72,6 +72,7 @@ require (
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/component-helpers v0.36.4
+	k8s.io/klog/v2 v2.140.0
 	k8s.io/kube-aggregator v0.28.2
 	k8s.io/kube-openapi v0.31.0
 	k8s.io/kubectl v0.0.0-00010101000000-000000000000
@@ -175,7 +176,6 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	k8s.io/apiserver v0.36.4 // indirect
-	k8s.io/klog/v2 v2.140.0 // indirect
 	kubevirt.io/controller-lifecycle-operator-sdk/api v0.2.4 // indirect
 	mvdan.cc/editorconfig v0.2.1-0.20231228180347-1925077f8eb2 // indirect
 	mvdan.cc/sh/v3 v3.8.0 // indirect
