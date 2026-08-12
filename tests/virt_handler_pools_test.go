@@ -21,11 +21,11 @@ package tests_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -104,24 +104,6 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 	}
 
-	updateNodesLabels := func(ctx context.Context, client kubecli.KubevirtClient, kv *k6tv1.KubeVirt, nodes []*corev1.Node) error {
-		nodesLabels, err := setNodesLabels(ctx, client, kv, nodes)
-		DeferCleanup(func() {
-			for nodeName, labelKeys := range nodesLabels {
-				var labelStr []string
-				for _, k := range labelKeys {
-					labelStr = append(labelStr, fmt.Sprintf(`"%s":null`, k))
-				}
-				patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStr, ",")))
-				_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
-				Expect(err).ToNot(HaveOccurred())
-			}
-
-			nodesLabels = nil
-		})
-		return err
-	}
-
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.HandlerPoolsConfig, error) {
 		kv := libkubevirt.GetCurrentKv(client)
 		poolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
@@ -148,8 +130,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), poolsCount)
 		}
 
-		err = updateNodesLabels(ctx, client, kv, nodes)
-		if err != nil {
+		if err := setNodesLabels(ctx, client, kv, nodes); err != nil {
 			return nil, err
 		}
 
@@ -178,7 +159,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools.Pools))
 		}
 
-		if err := updateNodesLabels(ctx, client, kv, nodes); err != nil {
+		if err := setNodesLabels(ctx, client, kv, nodes); err != nil {
 			return nil, err
 		}
 
@@ -554,10 +535,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			},
 		}
 
-		Expect(patchNodeLabels(ctx, client, defaultNodeName, map[string]string{poolSelectorLabelName: newPoolName})).To(Succeed())
-		DeferCleanup(func() {
-			Expect(removeNodeLabels(ctx, client, defaultNodeName, []string{poolSelectorLabelName})).To(Succeed())
-		})
+		err = patchNodeLabelsWithCleanup(ctx, client, defaultNodeName, map[string]string{poolSelectorLabelName: newPoolName})
+		Expect(err).ToNot(HaveOccurred())
 
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
 			if kv.Spec.HandlerPools == nil {
@@ -632,8 +611,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	It("should not expose any node to dual virt-handler coverage during pool removal", func() {
 		var (
 			violations []string
-			mu         sync.Mutex
-			wg         sync.WaitGroup
+			monitorErr error
 		)
 
 		By("deploying pools for all nodes")
@@ -649,28 +627,38 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		checkVMIOperational(ctx, client, vmi)
 
 		By("monitoring for dual virt-handler coverage while removing pools")
-		stopCh := make(chan struct{})
-		wg.Add(1)
+		monitorCtx, cancelMonitor := context.WithCancel(ctx)
+		monitorDone := make(chan struct{})
 		go func() {
+			defer close(monitorDone)
 			defer GinkgoRecover()
-			defer wg.Done()
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
 			for {
 				select {
-				case <-stopCh:
+				case <-monitorCtx.Done():
 					return
 				case <-ticker.C:
-					node, err := findNodeWithDualHandlerCoverage(ctx, client, virtHandlerName)
-					if err != nil || node == "" {
+					node, err := findNodeWithDualHandlerCoverage(monitorCtx, client, virtHandlerName)
+					if err != nil {
+						if monitorCtx.Err() != nil {
+							return
+						}
+						monitorErr = fmt.Errorf("monitoring virt-handler coverage: %w", err)
+						return
+					}
+					if node == "" {
 						continue
 					}
-					mu.Lock()
 					violations = append(violations, node)
-					mu.Unlock()
 				}
 			}
 		}()
+		stopMonitoring := func() {
+			cancelMonitor()
+			<-monitorDone
+		}
+		DeferCleanup(stopMonitoring)
 
 		By("triggering pool removal")
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -684,17 +672,14 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		By("waiting for all pool daemonsets to be deleted")
 		waitForPoolsBeRemoved(ctx, client)
 
-		close(stopCh)
-		wg.Wait()
+		stopMonitoring()
 
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
 		By("asserting no dual coverage was observed on any node")
-		mu.Lock()
-		capturedViolations := slices.Clone(violations)
-		mu.Unlock()
-		Expect(capturedViolations).To(BeEmpty(),
-			"nodes with dual virt-handler coverage during pool removal: %v", capturedViolations)
+		Expect(monitorErr).ToNot(HaveOccurred())
+		Expect(violations).To(BeEmpty(),
+			"nodes with dual virt-handler coverage during pool removal: %v", violations)
 
 		By("verifying VMI survived pool removal without restart")
 		checkVMIOperational(ctx, client, vmi)
@@ -731,10 +716,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(pool0NodeName).ToNot(BeEmpty(), "could not find node assigned to pool-0")
 
 		By("re-labeling node from pool-0 to pool-1")
-		Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool1LabelValue})).To(Succeed())
-		DeferCleanup(func() {
-			Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool0LabelValue})).To(Succeed())
-		})
+		err = patchNodeLabelsWithCleanup(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool1LabelValue})
+		Expect(err).ToNot(HaveOccurred())
 
 		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
 		pool1DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[1].Name)
@@ -844,10 +827,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 
 		By("re-labeling node with new selector value")
 		const newSelectorValue = "pool-0-updated"
-		Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: newSelectorValue})).To(Succeed())
-		DeferCleanup(func() {
-			Expect(patchNodeLabels(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool0LabelValue})).To(Succeed())
-		})
+		err = patchNodeLabelsWithCleanup(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: newSelectorValue})
+		Expect(err).ToNot(HaveOccurred())
 
 		By("updating pool-0's node selector in KubeVirt spec")
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
@@ -895,13 +876,10 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 
 		By("labeling the eligible nodes")
+		newLabels := map[string]string{groupLabel: groupValue, poolSelectorLabelName: defaultPoolValue}
 		for _, node := range nodes {
-			err = patchNodeLabels(ctx, client, node.Name, map[string]string{groupLabel: groupValue, poolSelectorLabelName: defaultPoolValue})
+			err = patchNodeLabelsWithCleanup(ctx, client, node.Name, newLabels)
 			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() {
-				err := removeNodeLabels(ctx, client, node.Name, []string{groupLabel, poolSelectorLabelName})
-				Expect(err).ToNot(HaveOccurred(), node.Name)
-			})
 		}
 
 		By("deploying pools")
@@ -932,8 +910,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 
 		seenVirtHandlers, poolHandlers := checkCorrectPlacement(ctx, client, clusterNodes.Items, pools)
-
-		Expect(seenVirtHandlers).To(Equal(len(nodes) - poolsCount))
+		Expect(seenVirtHandlers).To(Equal(len(nodes)))
 		Expect(poolHandlers).To(Equal(poolsCount))
 
 		By("checking incorrect workload node selectors being rejected")
@@ -975,12 +952,8 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				continue
 			}
 
-			err = patchNodeLabels(ctx, client, node.Name, map[string]string{workloadsLabel: workloadsValue})
+			err = patchNodeLabelsWithCleanup(ctx, client, node.Name, map[string]string{workloadsLabel: workloadsValue})
 			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() {
-				err := removeNodeLabels(ctx, client, node.Name, []string{workloadsLabel})
-				Expect(err).ToNot(HaveOccurred(), node.Name)
-			})
 		}
 		Expect(excludedNodeName).ToNot(BeEmpty())
 
@@ -1018,7 +991,6 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 
 		seenVirtHandlers, poolHandlers = checkCorrectPlacement(ctx, client, clusterNodes.Items, pools)
-
 		Expect(poolHandlers).To(Equal(poolsCount))
 		Expect(seenVirtHandlers).To(Equal(len(nodes) - 1))
 	})
@@ -1052,27 +1024,13 @@ func setNodesLabels(
 	client kubecli.KubevirtClient,
 	kv *k6tv1.KubeVirt,
 	nodes []*corev1.Node,
-) (map[string][]string, error) {
-	nodesLabels := make(map[string][]string)
+) error {
 	for i, pool := range kv.Spec.HandlerPools.Pools {
-		var labels []string
-		keys := make(map[string]struct{})
-		for k, v := range pool.NodeSelector {
-			labels = append(labels, fmt.Sprintf(`"%s": "%s"`, k, v))
-			keys[k] = struct{}{}
-		}
-
-		patch := []byte(fmt.Sprintf(`{"metadata": {"labels":{%s}}}`, strings.Join(labels, ",")))
-		_, err := client.CoreV1().Nodes().Patch(ctx, nodes[i].Name, types.MergePatchType, patch, metav1.PatchOptions{})
-		if err != nil {
-			return nodesLabels, err
-		}
-
-		for k := range keys {
-			nodesLabels[nodes[i].Name] = append(nodesLabels[nodes[i].Name], k)
+		if err := patchNodeLabelsWithCleanup(ctx, client, nodes[i].Name, pool.NodeSelector); err != nil {
+			return err
 		}
 	}
-	return nodesLabels, nil
+	return nil
 }
 
 func getMaxPossiblePoolsCount(ctx context.Context, client kubecli.KubevirtClient, dsName string) (int, error) {
@@ -1176,22 +1134,49 @@ func updateKvPools(ctx context.Context, client kubecli.KubevirtClient, updateFn 
 }
 
 func patchNodeLabels(ctx context.Context, client kubecli.KubevirtClient, nodeName string, labels map[string]string) error {
-	var labelStrs []string
+	labelValues := make(map[string]any, len(labels))
 	for k, v := range labels {
-		labelStrs = append(labelStrs, fmt.Sprintf(`"%s":"%s"`, k, v))
+		labelValues[k] = v
 	}
-	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStrs, ",")))
-	_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
-	return err
+	return patchNodeLabelValues(ctx, client, nodeName, labelValues)
 }
 
-func removeNodeLabels(ctx context.Context, client kubecli.KubevirtClient, nodeName string, keys []string) error {
-	var labelStrs []string
-	for _, k := range keys {
-		labelStrs = append(labelStrs, fmt.Sprintf(`"%s":null`, k))
+func patchNodeLabelsWithCleanup(ctx context.Context, client kubecli.KubevirtClient, nodeName string, labels map[string]string) error {
+	node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return err
 	}
-	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%s}}}`, strings.Join(labelStrs, ",")))
-	_, err := client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+
+	originalLabelValues := make(map[string]any, len(labels))
+	for key := range labels {
+		if value, exists := node.Labels[key]; exists {
+			originalLabelValues[key] = value
+		} else {
+			originalLabelValues[key] = nil
+		}
+	}
+
+	if err := patchNodeLabels(ctx, client, nodeName, labels); err != nil {
+		return err
+	}
+
+	DeferCleanup(func() {
+		Expect(patchNodeLabelValues(ctx, client, nodeName, originalLabelValues)).To(Succeed())
+	})
+	return nil
+}
+
+func patchNodeLabelValues(ctx context.Context, client kubecli.KubevirtClient, nodeName string, labels map[string]any) error {
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"labels": labels,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = client.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 
