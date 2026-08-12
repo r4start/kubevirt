@@ -23,6 +23,7 @@ go_library(
         "//vendor/k8s.io/client-go/util/workqueue:go_default_library",
         "//vendor/k8s.io/component-helpers/scheduling/corev1:go_default_library",
         "//vendor/k8s.io/component-helpers/scheduling/corev1/nodeaffinity:go_default_library",
+        "//vendor/k8s.io/klog/v2:go_default_library",
     ],
 )
 
