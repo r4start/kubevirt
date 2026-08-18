@@ -22,7 +22,8 @@ var _ = Describe("Handler DaemonSet", func() {
 	DescribeTable("should propagate imagePullPolicy to",
 		func(additionalProperties map[string]string, containerName string, isInitContainer bool, expectedPolicy corev1.PullPolicy) {
 			config.AdditionalProperties = additionalProperties
-			ds := NewHandlerDaemonSet(config, "", "", "")
+			ds, err := NewHandlerDaemonSet(config, "", "", "", nil)
+			Expect(err).ToNot(HaveOccurred())
 
 			containers := ds.Spec.Template.Spec.Containers
 			if isInitContainer {
@@ -65,7 +66,8 @@ var _ = Describe("Handler DaemonSet", func() {
 	)
 
 	It("should not use bidirectional mount propagation for the kubelet volume", func() {
-		ds, _ := NewHandlerDaemonSet(config, "", "", "", nil)
+		ds, err := NewHandlerDaemonSet(config, "", "", "", nil)
+		Expect(err).ToNot(HaveOccurred())
 		container := ds.Spec.Template.Spec.Containers[0]
 
 		var kubeletMount *corev1.VolumeMount
