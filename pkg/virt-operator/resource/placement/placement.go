@@ -45,6 +45,11 @@ const (
 // InjectPlacementMetadata merges all Tolerations, Affinity and NodeSelectors from NodePlacement into pod spec
 func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
 	var componentConfig *v1.ComponentConfig
+
+	if podSpec == nil {
+		podSpec = &corev1.PodSpec{}
+	}
+
 	if kv != nil {
 		switch nodePlacementOption {
 		case AnyNode:
@@ -52,18 +57,6 @@ func InjectPlacementMetadata(kv *v1.KubeVirt, podSpec *corev1.PodSpec, nodePlace
 		case RequireControlPlanePreferNonWorker:
 			componentConfig = kv.Spec.Infra
 		}
-	}
-	injectPlacementMetadata(kv, componentConfig, podSpec, nodePlacementOption)
-}
-
-// InjectComponentPlacementMetadata applies an explicitly selected deployment placement.
-func InjectComponentPlacementMetadata(componentConfig *v1.ComponentConfig, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
-	injectPlacementMetadata(nil, componentConfig, podSpec, nodePlacementOption)
-}
-
-func injectPlacementMetadata(kv *v1.KubeVirt, componentConfig *v1.ComponentConfig, podSpec *corev1.PodSpec, nodePlacementOption DefaultInfraComponentsNodePlacement) {
-	if podSpec == nil {
-		podSpec = &corev1.PodSpec{}
 	}
 
 	if componentConfig == nil || componentConfig.NodePlacement == nil {
@@ -240,24 +233,6 @@ func mergeNodeAffinities(
 		return
 	}
 
-	newSelectors := andNodeSelectorTerms(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
+	newSelectors := util.AndNodeSelectorTerms(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
 	podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectors
-}
-
-func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
-	out := make([]corev1.NodeSelectorTerm, 0, len(firstList)*len(secondList))
-	for _, ta := range firstList {
-		for _, tb := range secondList {
-			combined := corev1.NodeSelectorTerm{
-				MatchExpressions: make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchExpressions)+len(tb.MatchExpressions)),
-				MatchFields:      make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchFields)+len(tb.MatchFields)),
-			}
-			combined.MatchExpressions = append(combined.MatchExpressions, ta.MatchExpressions...)
-			combined.MatchExpressions = append(combined.MatchExpressions, tb.MatchExpressions...)
-			combined.MatchFields = append(combined.MatchFields, ta.MatchFields...)
-			combined.MatchFields = append(combined.MatchFields, tb.MatchFields...)
-			out = append(out, combined)
-		}
-	}
-	return out
 }

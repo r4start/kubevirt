@@ -60,22 +60,21 @@ const (
 // Placement is not applied at generation time so Infra node selectors cannot
 // stack on top of generated control-plane affinity.
 func injectDeploymentPlacement(kv *v1.KubeVirt, deployment *appsv1.Deployment) {
-	componentConfig := kv.Spec.Infra
+	kvCopy := kv.DeepCopy()
 	nodePlacementOption := placement.RequireControlPlanePreferNonWorker
 	switch deployment.Name {
 	case components.VirtExportProxyName:
-		componentConfig = kv.Spec.Workloads
-		if componentConfig == nil {
-			componentConfig = kv.Spec.Infra
+		if kvCopy.Spec.Workloads == nil {
+			kvCopy.Spec.Workloads = kvCopy.Spec.Infra
 		}
 		nodePlacementOption = placement.AnyNode
 	case components.VirtSynchronizationControllerName:
-		if kv.Spec.SynchronizationPlacement != nil {
-			componentConfig = kv.Spec.SynchronizationPlacement
+		if kvCopy.Spec.SynchronizationPlacement != nil {
+			kvCopy.Spec.Workloads = kvCopy.Spec.SynchronizationPlacement
 			nodePlacementOption = placement.AnyNode
 		}
 	}
-	placement.InjectComponentPlacementMetadata(componentConfig, &deployment.Spec.Template.Spec, nodePlacementOption)
+	placement.InjectPlacementMetadata(kvCopy, &deployment.Spec.Template.Spec, nodePlacementOption)
 }
 
 // applyExportProxyReplicaPolicy sets Spec.Replicas before syncDeployment.
