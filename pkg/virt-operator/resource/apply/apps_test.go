@@ -1419,7 +1419,7 @@ var _ = Describe("Apply Apps", func() {
 			})
 		})
 
-		It("should use SynchronizationPlacement without infra control-plane affinity", func() {
+		DescribeTable("should use SynchronizationPlacement without infra control-plane affinity", func(withOtherPlacements bool) {
 			syncConfig := &util.KubeVirtDeploymentConfig{
 				Registry:        Registry,
 				KubeVirtVersion: Version,
@@ -1440,17 +1440,36 @@ var _ = Describe("Apply Apps", func() {
 					},
 				},
 			}
-			kv.Spec.Infra = nil
+			if withOtherPlacements {
+				kv.Spec.Infra = &v1.ComponentConfig{
+					NodePlacement: &v1.NodePlacement{
+						NodeSelector: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+					},
+				}
+				kv.Spec.Workloads = &v1.ComponentConfig{
+					NodePlacement: &v1.NodePlacement{
+						NodeSelector: map[string]string{"workload": "true"},
+					},
+				}
+			}
+			originalKV := kv.DeepCopy()
 
 			injectDeploymentPlacement(kv, syncDeployment)
-			Expect(syncDeployment.Spec.Template.Spec.NodeSelector).To(HaveKey("node-role.kubernetes.io/worker"))
+			Expect(kv).To(Equal(originalKV))
+			Expect(syncDeployment.Spec.Template.Spec.NodeSelector).To(Equal(map[string]string{
+				"node-role.kubernetes.io/worker": "",
+				corev1.LabelOSStable:             "linux",
+			}))
 			Expect(syncDeployment.Spec.Template.Spec.Affinity).ToNot(BeNil())
 			Expect(syncDeployment.Spec.Template.Spec.Affinity.NodeAffinity).To(BeNil())
 			for _, tol := range syncDeployment.Spec.Template.Spec.Tolerations {
 				Expect(tol.Key).NotTo(Equal("node-role.kubernetes.io/control-plane"))
 				Expect(tol.Key).NotTo(Equal("node-role.kubernetes.io/master"))
 			}
-		})
+		},
+			Entry("without Infra or Workloads placement", false),
+			Entry("with distinct Infra and Workloads placement", true),
+		)
 
 		It("should use Infra placement without default control-plane affinity when SynchronizationPlacement is unset", func() {
 			syncConfig := &util.KubeVirtDeploymentConfig{
@@ -1474,7 +1493,9 @@ var _ = Describe("Apply Apps", func() {
 				},
 			}
 
+			originalKV := kv.DeepCopy()
 			injectDeploymentPlacement(kv, syncDeployment)
+			Expect(kv).To(Equal(originalKV))
 			Expect(syncDeployment.Spec.Template.Spec.NodeSelector).To(HaveKey("node-role.kubernetes.io/worker"))
 			Expect(syncDeployment.Spec.Template.Spec.Affinity).ToNot(BeNil())
 			Expect(syncDeployment.Spec.Template.Spec.Affinity.NodeAffinity).To(BeNil())

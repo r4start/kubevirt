@@ -233,24 +233,6 @@ func mergeNodeAffinities(
 		return
 	}
 
-	newSelectors := andNodeSelectorTerms(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
+	newSelectors := util.AndNodeSelectorTerms(podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectors)
 	podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectors
-}
-
-func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
-	out := make([]corev1.NodeSelectorTerm, 0, len(firstList)*len(secondList))
-	for _, ta := range firstList {
-		for _, tb := range secondList {
-			combined := corev1.NodeSelectorTerm{
-				MatchExpressions: make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchExpressions)+len(tb.MatchExpressions)),
-				MatchFields:      make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchFields)+len(tb.MatchFields)),
-			}
-			combined.MatchExpressions = append(combined.MatchExpressions, ta.MatchExpressions...)
-			combined.MatchExpressions = append(combined.MatchExpressions, tb.MatchExpressions...)
-			combined.MatchFields = append(combined.MatchFields, ta.MatchFields...)
-			combined.MatchFields = append(combined.MatchFields, tb.MatchFields...)
-			out = append(out, combined)
-		}
-	}
-	return out
 }
