@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -36,6 +37,14 @@ import (
 )
 
 var _ = Describe("Operator Config", func() {
+
+	type testStruct struct {
+		boolField  bool
+		intField   int
+		strField   string
+		mapField   map[string]string
+		sliceField []uint8
+	}
 
 	var envVarManager EnvVarManager
 
@@ -660,6 +669,42 @@ var _ = Describe("Operator Config", func() {
 		Expect(func() { cfg.generateInstallStrategyID() }).ToNot(Panic())
 		Expect(cfg.GetDeploymentID()).ToNot(BeEmpty())
 	})
+
+	DescribeTable("fields parsing", func(value reflect.Value, expectedValue string, expectPanic bool) {
+		if expectPanic {
+			Expect(func() { fieldsToString(value) }).To(Panic())
+		} else {
+			Expect(fieldsToString(value)).To(Equal(expectedValue))
+		}
+	},
+		Entry("bool", reflect.ValueOf(true), "true", false),
+		Entry("int", reflect.ValueOf(19), "19", false),
+		Entry("negative int", reflect.ValueOf(-19), "-19", false),
+		Entry("uint64", reflect.ValueOf(uint64(19)), "19", false),
+		Entry("nil pointer", reflect.ValueOf((*testStruct)(nil)), "", false),
+		Entry("pointer to struct", reflect.ValueOf(&struct{ Value string }{Value: "value"}), "Valuevalue", false),
+		Entry("nil interface", reflect.ValueOf(new(interface{})).Elem(), "", false),
+		Entry("map of interfaces", reflect.ValueOf(map[string]interface{}{
+			"nil":     nil,
+			"pointer": (*testStruct)(nil),
+			"value":   &struct{ Value string }{Value: "value"},
+		}), "nilpointervalueValuevalue", false),
+		Entry("string", reflect.ValueOf("aaaaaaaa"), "aaaaaaaa", false),
+		Entry("array", reflect.ValueOf([7]int{-2, -1, 0, 1, 2, 3, 4}), "-2-101234", false),
+		Entry("slice", reflect.ValueOf([]int{-2, -1, 0, 1, 2, 3, 4}), "-2-101234", false),
+		Entry("map", reflect.ValueOf(map[string]string{"1": "one", "2": "two", "-19": "negative nineteen"}), "-19negative nineteen1one2two", false),
+		Entry("struct", reflect.ValueOf(testStruct{
+			boolField:  true,
+			intField:   -781,
+			strField:   "abrasKadabra",
+			mapField:   map[string]string{"11": "eleven", "12": "twelve", "77": "seventy seven"},
+			sliceField: []uint8{245, 127, 78, 19, 17, 3, 0},
+		}),
+			"boolFieldtrueintField-781strFieldabrasKadabramapField11eleven12twelve77seventy sevensliceField24512778191730",
+			false,
+		),
+		Entry("panic", reflect.ValueOf(make(chan int)), "", true),
+	)
 
 	DescribeTable("CheckHandlerPoolsNodeSelectorsForConflicts", func(kv *v1.KubeVirt, expectedError error) {
 		if err := CheckHandlerPoolsNodeSelectorsForConflicts(kv); expectedError != nil {
