@@ -603,11 +603,12 @@ func validateMigrationConfiguration(oldConfig, newConfig *v1.KubeVirtConfigurati
 func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 	const (
 		partitionKeysField = "spec.handlerPools.partitionKeys"
+		poolNameField      = "spec.handlerPools.pools.name"
 		nodeSelectorField  = "spec.handlerPools.pools.nodeSelector"
+
+		maxPartitionKeys = 8
 	)
-	var (
-		causes []metav1.StatusCause
-	)
+	var causes []metav1.StatusCause
 
 	if !hasFeatureGateEnabled(&config.Spec.Configuration, featuregate.HandlerPoolsGate) ||
 		config.Spec.HandlerPools == nil {
@@ -617,7 +618,7 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 	poolsConfig := config.Spec.HandlerPools
 
 	partitionKeysLen := len(poolsConfig.PartitionKeys)
-	if partitionKeysLen <= 0 || partitionKeysLen > 16 {
+	if partitionKeysLen <= 0 || partitionKeysLen > maxPartitionKeys {
 		return []metav1.StatusCause{
 			{
 				Type:    metav1.CauseTypeFieldValueRequired,
@@ -669,7 +670,7 @@ func validateHandlerPools(config *v1.KubeVirt) []metav1.StatusCause {
 			causes = append(causes, metav1.StatusCause{
 				Type:    metav1.CauseTypeFieldValueDuplicate,
 				Message: fmt.Sprintf("pools names should be unique, but there are two duplicates: %s", pool.Name),
-				Field:   "spec.handlerPools.pools.name",
+				Field:   poolNameField,
 			})
 		}
 
