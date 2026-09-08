@@ -7,6 +7,7 @@ go_library(
         "config.go",
         "env_var_manager.go",
         "readycheck.go",
+        "selectors.go",
         "types.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virt-operator/util",

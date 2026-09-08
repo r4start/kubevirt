@@ -741,44 +741,57 @@ func getStringFromFields(c KubeVirtDeploymentConfig) string {
 }
 
 func fieldsToString(v reflect.Value) string {
-	result := ""
-	for i := 0; i < v.NumField(); i++ {
-		fieldName := v.Type().Field(i).Name
-		result += fieldName
-		field := v.Field(i)
-		switch field.Type().Kind() {
-		case reflect.Map:
-			keys := field.MapKeys()
-			nameKeys := make(map[string]reflect.Value, len(keys))
-			names := make([]string, 0, len(keys))
-			for _, key := range keys {
-				name := key.String()
-				if name == "" {
-					continue
-				}
-				nameKeys[name] = key
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				key := nameKeys[name]
-				val := field.MapIndex(key).String()
-				result += name
-				result += val
-			}
-		case reflect.Struct:
-			result += fieldsToString(field)
-		case reflect.String:
-			result += field.String()
-		case reflect.Slice, reflect.Array:
-			for i := 0; i < field.Len(); i++ {
-				result += fieldsToString(field.Index(i))
-			}
-		default:
-			panic(fmt.Sprintf("fieldsToString unable to handle field %s", fieldName))
+	if v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return ""
 		}
+		return fieldsToString(v.Elem())
 	}
-	return result
+
+	switch v.Kind() {
+	case reflect.Struct:
+		var result strings.Builder
+		for i := 0; i < v.NumField(); i++ {
+			result.WriteString(v.Type().Field(i).Name)
+			result.WriteString(fieldsToString(v.Field(i)))
+		}
+		return result.String()
+	case reflect.Map:
+		keys := v.MapKeys()
+		nameKeys := make(map[string]reflect.Value, len(keys))
+		names := make([]string, 0, len(keys))
+		for _, key := range keys {
+			name := key.String()
+			if name == "" {
+				continue
+			}
+			nameKeys[name] = key
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var result strings.Builder
+		for _, name := range names {
+			result.WriteString(name)
+			result.WriteString(fieldsToString(v.MapIndex(nameKeys[name])))
+		}
+		return result.String()
+	case reflect.Slice, reflect.Array:
+		var result strings.Builder
+		for i := 0; i < v.Len(); i++ {
+			result.WriteString(fieldsToString(v.Index(i)))
+		}
+		return result.String()
+	case reflect.String:
+		return v.String()
+	case reflect.Bool:
+		return strconv.FormatBool(v.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(v.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(v.Uint(), 10)
+	default:
+		panic(fmt.Sprintf("fieldsToString unable to handle kind %s", v.Kind()))
+	}
 }
 
 func (c *KubeVirtDeploymentConfig) GetDeploymentID() string {

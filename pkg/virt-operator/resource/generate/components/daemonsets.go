@@ -516,24 +516,6 @@ func generateDefaultHandlerPoolExclusions(
 	return prefixTree.Terms()
 }
 
-func andNodeSelectorTerms(firstList []corev1.NodeSelectorTerm, secondList []corev1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
-	out := make([]corev1.NodeSelectorTerm, 0, len(firstList)*len(secondList))
-	for _, ta := range firstList {
-		for _, tb := range secondList {
-			combined := corev1.NodeSelectorTerm{
-				MatchExpressions: make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchExpressions)+len(tb.MatchExpressions)),
-				MatchFields:      make([]corev1.NodeSelectorRequirement, 0, len(ta.MatchFields)+len(tb.MatchFields)),
-			}
-			combined.MatchExpressions = append(combined.MatchExpressions, ta.MatchExpressions...)
-			combined.MatchExpressions = append(combined.MatchExpressions, tb.MatchExpressions...)
-			combined.MatchFields = append(combined.MatchFields, ta.MatchFields...)
-			combined.MatchFields = append(combined.MatchFields, tb.MatchFields...)
-			out = append(out, combined)
-		}
-	}
-	return out
-}
-
 func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, exclusionTerms []corev1.NodeSelectorTerm) {
 	if len(exclusionTerms) == 0 {
 		// No valid exclusion expression -> keep current behavior unchanged.
@@ -557,7 +539,7 @@ func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, 
 
 	// Existing required terms ORed with each other; exclusionTerms are also ORed.
 	// To enforce BOTH sets, build cartesian product (AND semantics).
-	required.NodeSelectorTerms = andNodeSelectorTerms(required.NodeSelectorTerms, exclusionTerms)
+	required.NodeSelectorTerms = operatorutil.AndNodeSelectorTerms(required.NodeSelectorTerms, exclusionTerms)
 }
 
 type treeNode struct {
