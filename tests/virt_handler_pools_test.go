@@ -105,7 +105,6 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	}
 
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.HandlerPoolsConfig, error) {
-		kv := libkubevirt.GetCurrentKv(client)
 		poolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
 		if err != nil {
 			return nil, err
@@ -114,7 +113,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, errors.New("not enough nodes for virt-handler pools")
 		}
 
-		kv.Spec.HandlerPools, err = generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
+		pools, err := generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
 		if err != nil {
 			return nil, err
 		}
@@ -130,24 +129,23 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), poolsCount)
 		}
 
-		if err := setNodesLabels(ctx, client, kv, nodes); err != nil {
+		if err := setNodesLabels(ctx, client, pools.Pools, nodes); err != nil {
 			return nil, err
 		}
 
-		enableHandlerPools(kv)
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv := libkubevirt.GetCurrentKv(client)
+			kv.Spec.HandlerPools = pools
+			enableHandlerPools(kv)
 
-		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
-		if err != nil {
-			return nil, err
-		}
+			_, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
 
-		return kv.Spec.HandlerPools, nil
+		return pools, err
 	}
 
 	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools *k6tv1.HandlerPoolsConfig) (*k6tv1.KubeVirt, error) {
-		kv := libkubevirt.GetCurrentKv(client)
-		kv.Spec.HandlerPools = pools
-
 		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
 		if err != nil {
 			return nil, err
@@ -155,22 +153,25 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		if len(nodes) == 0 {
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
 		}
-		if len(nodes) < len(kv.Spec.HandlerPools.Pools) {
-			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(kv.Spec.HandlerPools.Pools))
+		if len(nodes) < len(pools.Pools) {
+			return nil, fmt.Errorf("not enough nodes with running virt-handler for full rollout; have %d; required %d", len(nodes), len(pools.Pools))
 		}
 
-		if err := setNodesLabels(ctx, client, kv, nodes); err != nil {
+		if err := setNodesLabels(ctx, client, pools.Pools, nodes); err != nil {
 			return nil, err
 		}
 
-		enableHandlerPools(kv)
+		var kv *k6tv1.KubeVirt
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv = libkubevirt.GetCurrentKv(client)
+			kv.Spec.HandlerPools = pools
+			enableHandlerPools(kv)
 
-		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
-		if err != nil {
-			return nil, err
-		}
+			kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
 
-		return kv, nil
+		return kv, err
 	}
 
 	deploySpecificPoolsWithExpectations := func(ctx context.Context, client kubecli.KubevirtClient, pools *k6tv1.HandlerPoolsConfig, expectedVirtHandlersCount int) (*k6tv1.KubeVirt, []appsv1.DaemonSet) {
@@ -205,7 +206,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 	}
 
 	runVMI := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.VirtualMachineInstance, string) {
-		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(), flags.StartupTimeoutSecondsSmall())
+		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(), 60)
 		vmi = libwait.WaitUntilVMIReady(vmi, console.LoginToAlpine)
 
 		DeferCleanup(func() {
@@ -213,7 +214,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 			if err != nil && !k8serrors.IsNotFound(err) {
 				Expect(err).ToNot(HaveOccurred())
 			}
-			Expect(libwait.WaitForVirtualMachineToDisappearWithTimeout(vmi, 120*time.Second)).To(Succeed())
+			libwait.WaitForVirtualMachineToDisappearWithTimeout(vmi, 120)
 		})
 
 		bootID, err := console.RunCommandAndStoreOutput(vmi, "cat /proc/sys/kernel/random/boot_id", 15*time.Second)
@@ -918,19 +919,26 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 		Expect(kv.Spec.Workloads).To(BeNil(), "kv.Spec.Workloads shouldn't be specified")
 
-		kv.Spec.Workloads = &k6tv1.ComponentConfig{
+		workloads := &k6tv1.ComponentConfig{
 			NodePlacement: &k6tv1.NodePlacement{
 				NodeSelector: map[string]string{
 					groupLabel: "bad-value",
 				},
 			},
 		}
-		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv := libkubevirt.GetCurrentKv(client)
+			kv.Spec.Workloads = workloads
+			kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
+
 		Expect(err).To(HaveOccurred())
 		Expect(k8serrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("unexpected error was returned: %+v", err))
 
-		statusError, ok := errors.AsType[*k8serrors.StatusError](err)
-		Expect(ok).To(BeTrue())
+		var statusError *k8serrors.StatusError
+		converted := errors.As(err, &statusError)
+		Expect(converted).To(BeTrue())
 		foundNodeSelectorInCauses := false
 		for _, cause := range statusError.Status().Details.Causes {
 			if cause.Field == "spec.handlerPools.pools.nodeSelector" {
@@ -957,10 +965,7 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}
 		Expect(excludedNodeName).ToNot(BeEmpty())
 
-		kv = libkubevirt.GetCurrentKv(client)
-		Expect(kv.Spec.Workloads).To(BeNil(), "kv.Spec.Workloads shouldn't be specified")
-
-		kv.Spec.Workloads = &k6tv1.ComponentConfig{
+		workloads = &k6tv1.ComponentConfig{
 			NodePlacement: &k6tv1.NodePlacement{
 				NodeSelector: map[string]string{
 					groupLabel: groupValue,
@@ -980,8 +985,15 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 				},
 			},
 		}
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			kv = libkubevirt.GetCurrentKv(client)
+			Expect(kv.Spec.Workloads).To(BeNil(), "kv.Spec.Workloads shouldn't be specified")
 
-		kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+			kv.Spec.Workloads = workloads
+			kv, err = client.KubeVirt(flags.KubeVirtInstallNamespace).Update(ctx, kv, metav1.UpdateOptions{})
+			return err
+		})
+
 		Expect(err).ToNot(HaveOccurred())
 
 		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
@@ -1022,10 +1034,10 @@ func generatePools(
 func setNodesLabels(
 	ctx context.Context,
 	client kubecli.KubevirtClient,
-	kv *k6tv1.KubeVirt,
+	pools []k6tv1.HandlerPoolConfig,
 	nodes []*corev1.Node,
 ) error {
-	for i, pool := range kv.Spec.HandlerPools.Pools {
+	for i, pool := range pools {
 		if err := patchNodeLabelsWithCleanup(ctx, client, nodes[i].Name, pool.NodeSelector); err != nil {
 			return err
 		}
@@ -1268,7 +1280,7 @@ func findNodeWithDualHandlerCoverage(ctx context.Context, client kubecli.Kubevir
 	}
 
 	for _, node := range nodesList.Items {
-		pods, err := listRunningPodsOnNode(ctx, client, node.Name)
+		pods, err := listPodsOnNode(ctx, client, node.Name, fields.OneTermEqualSelector("status.phase", string(corev1.PodRunning)))
 		if err != nil {
 			return "", err
 		}
