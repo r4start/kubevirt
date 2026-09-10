@@ -21,7 +21,8 @@ var _ = Describe("Handler DaemonSet", func() {
 
 	Context("SecurityContext", func() {
 		It("should NOT set ReadOnlyRootFilesystem on privileged virt-handler container", func() {
-			ds := NewHandlerDaemonSet(config, "", "", "")
+			ds, err := NewHandlerDaemonSet(config, "", "", "", nil)
+			Expect(err).ToNot(HaveOccurred())
 			container := ds.Spec.Template.Spec.Containers[0]
 			Expect(container.Name).To(Equal(VirtHandlerName))
 			Expect(container.SecurityContext).ToNot(BeNil())
@@ -31,7 +32,8 @@ var _ = Describe("Handler DaemonSet", func() {
 		})
 
 		It("should NOT set ReadOnlyRootFilesystem on the privileged virt-launcher init container", func() {
-			ds := NewHandlerDaemonSet(config, "", "", "")
+			ds, err := NewHandlerDaemonSet(config, "", "", "", nil)
+			Expect(err).ToNot(HaveOccurred())
 			var virtLauncher *corev1.Container
 			for i := range ds.Spec.Template.Spec.InitContainers {
 				if ds.Spec.Template.Spec.InitContainers[i].Name == "virt-launcher" {
@@ -50,7 +52,8 @@ var _ = Describe("Handler DaemonSet", func() {
 			config.AdditionalProperties = map[string]string{
 				operatorutil.AdditionalPropertiesPullSecrets: `[{"name":"test-secret"}]`,
 			}
-			ds := NewHandlerDaemonSet(config, "", "", "")
+			ds, err := NewHandlerDaemonSet(config, "", "", "", nil)
+			Expect(err).ToNot(HaveOccurred())
 
 			var imageHolder *corev1.Container
 			for i := range ds.Spec.Template.Spec.Containers {
