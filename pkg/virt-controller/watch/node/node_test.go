@@ -389,6 +389,44 @@ var _ = Describe("Node controller with", func() {
 			vmi = watchtesting.NewRunningVirtualMachine("vmi", node)
 		})
 
+		DescribeTable("should account for automatic DaemonSet tolerations when the handler pod is missing",
+			func(key string, effect k8sv1.TaintEffect, hostNetwork bool, eligible bool) {
+				node.Spec.Taints = []k8sv1.Taint{{Key: key, Effect: effect}}
+				ds := HealthVirtHandlerDS()
+				ds.Spec.Template.Spec.HostNetwork = hostNetwork
+				original := ds.DeepCopy()
+
+				kubeClient.Fake.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, &k8sv1.PodList{}, nil
+				})
+				kubeClient.Fake.PrependReactor("list", "daemonsets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*ds}}, nil
+				})
+
+				err := controller.createEventIfNodeHasOrphanedVMIs(node, []*v1.VirtualMachineInstance{vmi})
+				if eligible {
+					Expect(err).ToNot(HaveOccurred())
+					testutils.ExpectEvent(recorder, NodeUnresponsiveReason)
+				} else {
+					Expect(err).To(MatchError(ContainSubstring("virt-handler DaemonSet isn't running on the node")))
+				}
+				Expect(ds).To(Equal(original))
+			},
+			Entry("not-ready NoExecute", k8sv1.TaintNodeNotReady, k8sv1.TaintEffectNoExecute, false, true),
+			Entry("unreachable NoExecute", k8sv1.TaintNodeUnreachable, k8sv1.TaintEffectNoExecute, false, true),
+			Entry("disk-pressure NoSchedule", k8sv1.TaintNodeDiskPressure, k8sv1.TaintEffectNoSchedule, false, true),
+			Entry("memory-pressure NoSchedule", k8sv1.TaintNodeMemoryPressure, k8sv1.TaintEffectNoSchedule, false, true),
+			Entry("pid-pressure NoSchedule", k8sv1.TaintNodePIDPressure, k8sv1.TaintEffectNoSchedule, false, true),
+			Entry("unschedulable NoSchedule", k8sv1.TaintNodeUnschedulable, k8sv1.TaintEffectNoSchedule, false, true),
+			Entry("network-unavailable with host networking", k8sv1.TaintNodeNetworkUnavailable, k8sv1.TaintEffectNoSchedule, true, true),
+			Entry("network-unavailable without host networking", k8sv1.TaintNodeNetworkUnavailable, k8sv1.TaintEffectNoSchedule, false, false),
+			Entry("network-unavailable NoExecute with host networking", k8sv1.TaintNodeNetworkUnavailable, k8sv1.TaintEffectNoExecute, true, false),
+			Entry("not-ready NoSchedule", k8sv1.TaintNodeNotReady, k8sv1.TaintEffectNoSchedule, false, false),
+			Entry("custom NoSchedule taint", "example.com/dedicated", k8sv1.TaintEffectNoSchedule, false, false),
+			Entry("custom NoExecute taint", "example.com/dedicated", k8sv1.TaintEffectNoExecute, false, false),
+			Entry("custom PreferNoSchedule taint", "example.com/dedicated", k8sv1.TaintEffectPreferNoSchedule, false, true),
+		)
+
 		DescribeTable("should reconcile a terminated launcher according to the handler pool configuration",
 			func(gates []string, pools *v1.HandlerPoolsConfig, expectError bool) {
 				kv := testutils.GetFakeKubeVirtClusterConfig(kubeVirtStore).DeepCopy()
@@ -640,6 +678,57 @@ var _ = Describe("Node controller with", func() {
 			running, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(running).To(BeTrue())
+		})
+	})
+
+	Context("daemonset pod tolerations", func() {
+		DescribeTable("should replace finite eviction tolerations while preserving custom tolerations", func(key string) {
+			seconds := int64(300)
+			finite := k8sv1.Toleration{
+				Key:               key,
+				Operator:          k8sv1.TolerationOpExists,
+				Effect:            k8sv1.TaintEffectNoExecute,
+				TolerationSeconds: &seconds,
+			}
+			custom := k8sv1.Toleration{
+				Key:      "example.com/dedicated",
+				Operator: k8sv1.TolerationOpEqual,
+				Value:    "infra",
+				Effect:   k8sv1.TaintEffectNoSchedule,
+			}
+			spec := &k8sv1.PodSpec{Tolerations: []k8sv1.Toleration{custom, finite}}
+
+			addOrUpdateDaemonPodTolerations(spec)
+
+			Expect(spec.Tolerations).To(ContainElement(k8sv1.Toleration{
+				Key:      key,
+				Operator: k8sv1.TolerationOpExists,
+				Effect:   k8sv1.TaintEffectNoExecute,
+			}))
+			Expect(spec.Tolerations).ToNot(ContainElement(finite))
+			Expect(spec.Tolerations).To(ContainElement(custom))
+			Expect(spec.Tolerations).To(HaveLen(7))
+
+			By("leaving the pod spec unchanged when applying the defaults again")
+			expected := spec.DeepCopy()
+			addOrUpdateDaemonPodTolerations(spec)
+			Expect(spec).To(Equal(expected))
+		},
+			Entry("not-ready", k8sv1.TaintNodeNotReady),
+			Entry("unreachable", k8sv1.TaintNodeUnreachable),
+		)
+
+		It("should report no change when a toleration is already identical", func() {
+			toleration := k8sv1.Toleration{
+				Key:      k8sv1.TaintNodeNotReady,
+				Operator: k8sv1.TolerationOpExists,
+				Effect:   k8sv1.TaintEffectNoExecute,
+			}
+			spec := &k8sv1.PodSpec{Tolerations: []k8sv1.Toleration{toleration}}
+			expected := spec.DeepCopy()
+
+			Expect(addOrUpdateTolerationInPodSpec(spec, &toleration)).To(BeFalse())
+			Expect(spec).To(Equal(expected))
 		})
 	})
 
