@@ -1,10 +1,8 @@
 package components
 
 import (
-	"errors"
 	"fmt"
 	"maps"
-	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -490,17 +488,16 @@ func generateDefaultHandlerPoolExclusions(
 	partitionKeys []string,
 	pools []operatorutil.HandlerPoolConfig,
 ) ([]corev1.NodeSelectorTerm, error) {
-	prefixTree, err := newNodeSelectorTermsTree(partitionKeys)
+	nodeSelectorTerms, err := operatorutil.NewNodeSelectorTerms(partitionKeys)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range pools {
-		if err := prefixTree.Insert(p.NodeSelector); err != nil {
+	for _, pool := range pools {
+		if err := nodeSelectorTerms.Insert(pool.NodeSelector); err != nil {
 			return nil, err
 		}
 	}
-
-	return prefixTree.Terms()
+	return nodeSelectorTerms.Terms()
 }
 
 func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, exclusionTerms []corev1.NodeSelectorTerm) {
@@ -527,139 +524,6 @@ func applyDefaultHandlerExclusionTerms(podTemplateSpec *corev1.PodTemplateSpec, 
 	// Existing required terms ORed with each other; exclusionTerms are also ORed.
 	// To enforce BOTH sets, build cartesian product (AND semantics).
 	required.NodeSelectorTerms = operatorutil.AndNodeSelectorTerms(required.NodeSelectorTerms, exclusionTerms)
-}
-
-type treeNode struct {
-	children map[string]*treeNode
-}
-
-func newNode() *treeNode {
-	return &treeNode{
-		children: make(map[string]*treeNode),
-	}
-}
-
-type nodeSelectorTermsTree struct {
-	orderedKeys []string
-	root        *treeNode
-}
-
-func newNodeSelectorTermsTree(partitionKeys []string) (*nodeSelectorTermsTree, error) {
-	if len(partitionKeys) == 0 {
-		return nil, errors.New("partition keys shouldn't be empty")
-	}
-
-	orderedKeys := slices.Clone(partitionKeys)
-	slices.Sort(orderedKeys)
-
-	duplicates := make(map[string]struct{})
-	for _, key := range orderedKeys {
-		if _, found := duplicates[key]; found {
-			return nil, fmt.Errorf("duplicate partition key %s", key)
-		}
-		duplicates[key] = struct{}{}
-	}
-
-	return &nodeSelectorTermsTree{
-		orderedKeys: orderedKeys,
-		root:        newNode(),
-	}, nil
-}
-
-func (tree *nodeSelectorTermsTree) Insert(terms map[string]string) error {
-	if len(terms) != len(tree.orderedKeys) {
-		return errors.New("node selector terms don't conform with partition keys")
-	}
-
-	currentNode := tree.root
-	for _, key := range tree.orderedKeys {
-		var (
-			node   *treeNode
-			exists bool
-		)
-		value, exists := terms[key]
-		if !exists {
-			return fmt.Errorf("terms doesn't contain %s key", key)
-		}
-
-		node, exists = currentNode.children[value]
-		if !exists {
-			node = newNode()
-			currentNode.children[value] = node
-		}
-		currentNode = node
-	}
-
-	return nil
-}
-
-func (tree *nodeSelectorTermsTree) Terms() ([]corev1.NodeSelectorTerm, error) {
-	var (
-		terms []corev1.NodeSelectorTerm
-	)
-
-	if len(tree.root.children) == 0 {
-		return terms, nil
-	}
-
-	type termData struct {
-		node   *treeNode
-		prefix []string
-		level  int
-	}
-
-	nodesToProcess := []termData{
-		{
-			node:   tree.root,
-			prefix: make([]string, 0),
-			level:  0,
-		},
-	}
-
-	for len(nodesToProcess) != 0 {
-		lastElementIndex := len(nodesToProcess) - 1
-		node := nodesToProcess[lastElementIndex]
-		nodesToProcess = nodesToProcess[:lastElementIndex]
-
-		values := slices.Collect(maps.Keys(node.node.children))
-		if len(values) == 0 {
-			// This is a leaf. We don't need to do anything.
-			continue
-		}
-
-		slices.Sort(values)
-
-		for _, value := range values {
-			newPrefix := slices.Clone(node.prefix)
-			newPrefix = append(newPrefix, value)
-
-			nodesToProcess = append(nodesToProcess, termData{
-				node:   node.node.children[value],
-				prefix: newPrefix,
-				level:  node.level + 1,
-			})
-		}
-
-		selector := corev1.NodeSelectorTerm{
-			MatchExpressions: []corev1.NodeSelectorRequirement{
-				{
-					Key:      tree.orderedKeys[node.level],
-					Operator: corev1.NodeSelectorOpNotIn,
-					Values:   values,
-				},
-			},
-		}
-		for i := range node.level {
-			selector.MatchExpressions = append(selector.MatchExpressions, corev1.NodeSelectorRequirement{
-				Key:      tree.orderedKeys[i],
-				Operator: corev1.NodeSelectorOpIn,
-				Values:   []string{node.prefix[i]},
-			})
-		}
-		terms = append(terms, selector)
-	}
-
-	return terms, nil
 }
 
 func addVirtHandlerPodAntiAffinity(podTemplateSpec *corev1.PodTemplateSpec) {
