@@ -1316,32 +1316,8 @@ func (r *Reconciler) deleteOrphanedPoolDaemonSets() (bool, error) {
 				return false, err
 			}
 		}
-
-		if r.orphanedDaemonSetHasRunningPods(ds.Name) {
-			continue
-		}
-
-		// The DS is already deleting and no pod owned by it is still running.
-		// Wait for the cache entry itself to disappear before allowing the default
-		// virt-handler DS to expand onto the freed nodes.
 	}
 	return allGone, nil
-}
-
-func (r *Reconciler) orphanedDaemonSetHasRunningPods(daemonSetName string) bool {
-	for _, obj := range r.stores.InfrastructurePodCache.List() {
-		pod, ok := obj.(*corev1.Pod)
-		if !ok || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-
-		owner := metav1.GetControllerOf(pod)
-		if owner != nil && owner.Kind == "DaemonSet" && owner.Name == daemonSetName {
-			return true
-		}
-	}
-
-	return false
 }
 
 func getInstallStrategyAnnotations(meta *metav1.ObjectMeta) (imageTag, imageRegistry, id string, ok bool) {
