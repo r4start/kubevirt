@@ -26,23 +26,29 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
+	watchtools "k8s.io/client-go/tools/watch"
 	"k8s.io/client-go/util/retry"
 
 	k6tv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 
+	"kubevirt.io/kubevirt/pkg/libvmi"
 	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 
 	"kubevirt.io/kubevirt/tests/console"
@@ -104,6 +110,29 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
 	}
 
+	waitForHandlerPodOnNode := func(ctx context.Context, client kubecli.KubevirtClient, nodeName, dsName string, previousUID types.UID) *corev1.Pod {
+		var virtHandlerPod *corev1.Pod
+		Eventually(func(g Gomega) {
+			pods, err := client.CoreV1().Pods(flags.KubeVirtInstallNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: k6tv1.AppLabel + "=virt-handler",
+				FieldSelector: fields.OneTermEqualSelector("spec.nodeName", nodeName).String(),
+			})
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(pods.Items).To(HaveLen(1))
+			virtHandlerPod = &pods.Items[0]
+			g.Expect(virtHandlerPod.UID).ToNot(Equal(previousUID))
+			g.Expect(virtHandlerPod.DeletionTimestamp).To(BeNil())
+			owner := metav1.GetControllerOf(virtHandlerPod)
+			g.Expect(owner).ToNot(BeNil())
+			g.Expect(owner.Kind).To(Equal("DaemonSet"))
+			g.Expect(owner.Name).To(Equal(dsName))
+			g.Expect(slices.ContainsFunc(virtHandlerPod.Status.Conditions, func(condition corev1.PodCondition) bool {
+				return condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue
+			})).To(BeTrue(), "replacement virt-handler should be ready")
+		}, 420*time.Second, time.Second).Should(Succeed())
+		return virtHandlerPod
+	}
+
 	deployPools := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.HandlerPoolsConfig, error) {
 		poolsCount, err := getMaxPossiblePoolsCount(ctx, client, virtHandlerName)
 		if err != nil {
@@ -145,10 +174,13 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		return pools, err
 	}
 
-	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools *k6tv1.HandlerPoolsConfig) (*k6tv1.KubeVirt, error) {
-		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
-		if err != nil {
-			return nil, err
+	deploySpecificPools := func(ctx context.Context, client kubecli.KubevirtClient, pools *k6tv1.HandlerPoolsConfig, nodes ...*corev1.Node) (*k6tv1.KubeVirt, error) {
+		var err error
+		if len(nodes) == 0 {
+			nodes, err = getEligibleNodes(ctx, client, virtHandlerName)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if len(nodes) == 0 {
 			return nil, errors.New("the cluster doesn't have nodes with running virt-handler pods")
@@ -205,8 +237,18 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		waitForPoolsBeRemoved(ctx, client)
 	}
 
-	runVMI := func(ctx context.Context, client kubecli.KubevirtClient) (*k6tv1.VirtualMachineInstance, string) {
-		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(), 60)
+	runVMI := func(ctx context.Context, client kubecli.KubevirtClient, opts ...libvmi.Option) (*k6tv1.VirtualMachineInstance, string) {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		workerNodes := slices.DeleteFunc(nodes, func(node *corev1.Node) bool {
+			return !isSchedulableWorker(node)
+		})
+		// Infrastructure rollouts can preempt VMIs on control-plane nodes.
+		// Keep any explicit node selector and let the scheduler choose among workers.
+		for _, node := range workerNodes {
+			opts = append(opts, libvmi.WithNodeAffinityFor(node.Name))
+		}
+		vmi := libvmops.RunVMIAndExpectLaunch(libvmifact.NewAlpine(opts...), 60)
 		vmi = libwait.WaitUntilVMIReady(vmi, console.LoginToAlpine)
 
 		DeferCleanup(func() {
@@ -609,11 +651,18 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		checkBootID(vmi, bootID)
 	})
 
-	It("should not expose any node to dual virt-handler coverage during pool removal", func() {
-		var (
-			violations []string
-			monitorErr error
-		)
+	It("should not overlap virt-handlers during pool deployment and removal", func() {
+		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(nodes).ToNot(BeEmpty())
+
+		By("running a VMI on a worker node that will move into a pool")
+		vmi, bootID := runVMI(ctx, client)
+
+		By("monitoring handler pods before enabling pools")
+		assertNoOverlap, stop, err := monitorVirtHandlerCoverage(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(stop)
 
 		By("deploying pools for all nodes")
 		pools, err := deployPools(ctx, client)
@@ -622,125 +671,108 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Eventually(func() error {
 			return checkDaemonSetStatus(ctx, client, virtHandlerName, 0)
 		}, 240*time.Second, 1*time.Second).Should(Succeed())
-
-		By("running a VMI")
-		vmi, bootID := runVMI(ctx, client)
-		checkVMIOperational(ctx, client, vmi)
-
-		By("monitoring for dual virt-handler coverage while removing pools")
-		monitorCtx, cancelMonitor := context.WithCancel(ctx)
-		monitorDone := make(chan struct{})
-		go func() {
-			defer close(monitorDone)
-			defer GinkgoRecover()
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-monitorCtx.Done():
-					return
-				case <-ticker.C:
-					node, err := findNodeWithDualHandlerCoverage(monitorCtx, client, virtHandlerName)
-					if err != nil {
-						if monitorCtx.Err() != nil {
-							return
-						}
-						monitorErr = fmt.Errorf("monitoring virt-handler coverage: %w", err)
-						return
-					}
-					if node == "" {
-						continue
-					}
-					violations = append(violations, node)
-				}
-			}
-		}()
-		stopMonitoring := func() {
-			cancelMonitor()
-			<-monitorDone
-		}
-		DeferCleanup(stopMonitoring)
-
-		By("triggering pool removal")
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			kv := libkubevirt.GetCurrentKv(client).DeepCopy()
-			kv.Spec = *originalSpec.DeepCopy()
-			_, err := client.KubeVirt(kv.Namespace).Update(ctx, kv, metav1.UpdateOptions{})
-			return err
-		})
-		Expect(err).ToNot(HaveOccurred())
-
-		By("waiting for all pool daemonsets to be deleted")
-		waitForPoolsBeRemoved(ctx, client)
-
-		stopMonitoring()
-
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
 
-		By("asserting no dual coverage was observed on any node")
-		Expect(monitorErr).ToNot(HaveOccurred())
-		Expect(violations).To(BeEmpty(),
-			"nodes with dual virt-handler coverage during pool removal: %v", violations)
+		By("verifying VMI survived initial pool deployment")
+		checkVMIOperational(ctx, client, vmi)
+		checkBootID(vmi, bootID)
+
+		By("removing pools and waiting for default handlers to become ready")
+		removePools(ctx, client)
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+		Eventually(func() error {
+			return checkDaemonSetStatus(ctx, client, virtHandlerName, int32(len(nodes)))
+		}, 240*time.Second, 1*time.Second).Should(Succeed())
+		Expect(assertNoOverlap()).ToNot(HaveOccurred())
 
 		By("verifying VMI survived pool removal without restart")
 		checkVMIOperational(ctx, client, vmi)
 		checkBootID(vmi, bootID)
 	})
 
-	It("should handle node re-labeling between pools", func() {
-		nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
-		Expect(err).ToNot(HaveOccurred())
-		if len(nodes) < 3 {
-			Skip("test requires at least 3 nodes with virt-handler")
-		}
+	DescribeTable("should re-label a node without overlapping virt-handlers",
+		func(sourcePool string, targetPool string) {
+			const defaultPool = "default"
+			poolsCount := 1
+			if sourcePool != defaultPool && targetPool != defaultPool {
+				poolsCount = 2
+			}
+			nodes, err := getEligibleNodes(ctx, client, virtHandlerName)
+			Expect(err).ToNot(HaveOccurred())
+			if len(nodes) < poolsCount+1 {
+				Skip(fmt.Sprintf("test requires at least %d nodes with virt-handler", poolsCount+1))
+			}
 
-		By("deploying pools leaving one node for default handler")
-		poolsCount := len(nodes) - 1
-		pools, err := generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
-		Expect(err).ToNot(HaveOccurred())
+			workerIndex := slices.IndexFunc(nodes, isSchedulableWorker)
+			if workerIndex < 0 {
+				Skip("test requires a schedulable worker node with virt-handler")
+			}
+			// Dedicated pools use the first nodes in this list. Reserve a worker
+			// for the source pool, including the default-pool case.
+			sourceIndex := 0
+			if sourcePool == defaultPool {
+				sourceIndex = poolsCount
+			}
+			nodes[sourceIndex], nodes[workerIndex] = nodes[workerIndex], nodes[sourceIndex]
+			nodeName := nodes[sourceIndex].Name
 
-		kv, err := deploySpecificPools(ctx, client, pools)
-		Expect(err).ToNot(HaveOccurred())
-		testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
-		waitForPoolsBeReady(poolsCount)
+			By("deploying dedicated pools while retaining default handler nodes")
+			for _, node := range nodes {
+				Expect(patchNodeLabelsWithCleanup(ctx, client, node.Name,
+					map[string]string{poolSelectorLabelName: defaultPool})).To(Succeed())
+			}
+			pools, err := generatePools(poolsCount, poolNamePrefix, poolSelectorLabelName)
+			Expect(err).ToNot(HaveOccurred())
+			kv, err := deploySpecificPools(ctx, client, pools, nodes...)
+			Expect(err).ToNot(HaveOccurred())
+			testsuite.EnsureKubevirtReadyWithTimeout(kv, 420*time.Second)
+			waitForPoolsBeReady(poolsCount)
 
-		By("running a VMI")
-		vmi, bootID := runVMI(ctx, client)
-		checkVMIOperational(ctx, client, vmi)
+			daemonSetName := func(pool string) string {
+				if pool == defaultPool {
+					return virtHandlerName
+				}
+				return virtHandlerName + "-" + pool
+			}
+			expectedCount := func(pool string) int32 {
+				if pool == defaultPool {
+					return int32(len(nodes) - poolsCount)
+				}
+				return 1
+			}
+			sourceDSName, targetDSName := daemonSetName(sourcePool), daemonSetName(targetPool)
+			oldHandler := waitForHandlerPodOnNode(ctx, client, nodeName, sourceDSName, "")
 
-		By("finding the node assigned to pool-0")
-		pool0LabelValue := pools.Pools[0].NodeSelector[poolSelectorLabelName]
-		pool1LabelValue := pools.Pools[1].NodeSelector[poolSelectorLabelName]
+			By("running a VMI on the node being re-labeled")
+			vmi, bootID := runVMI(ctx, client, libvmi.WithNodeSelectorFor(nodeName))
+			Expect(vmi.Status.NodeName).To(Equal(nodeName))
+			assertNoOverlap, stop, err := monitorVirtHandlerCoverage(ctx, client, virtHandlerName)
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(stop)
 
-		pool0NodeName, err := findNodeWithLabel(ctx, client, poolSelectorLabelName, pool0LabelValue)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(pool0NodeName).ToNot(BeEmpty(), "could not find node assigned to pool-0")
+			By(fmt.Sprintf("re-labeling the node from %s to %s without changing pool configuration", sourcePool, targetPool))
+			Expect(patchNodeLabelsWithCleanup(ctx, client, nodeName,
+				map[string]string{poolSelectorLabelName: targetPool})).To(Succeed())
 
-		By("re-labeling node from pool-0 to pool-1")
-		err = patchNodeLabelsWithCleanup(ctx, client, pool0NodeName, map[string]string{poolSelectorLabelName: pool1LabelValue})
-		Expect(err).ToNot(HaveOccurred())
+			By("waiting for the old handler to disappear and its replacement to become ready")
+			waitForHandlerPodOnNode(ctx, client, nodeName, targetDSName, oldHandler.UID)
+			Eventually(func() error {
+				return checkDaemonSetStatus(ctx, client, sourceDSName, expectedCount(sourcePool)-1)
+			}, 420*time.Second, 1*time.Second).Should(Succeed())
+			Eventually(func() error {
+				return checkDaemonSetStatus(ctx, client, targetDSName, expectedCount(targetPool)+1)
+			}, 420*time.Second, 1*time.Second).Should(Succeed())
+			testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+			Expect(assertNoOverlap()).ToNot(HaveOccurred())
 
-		pool0DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
-		pool1DSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[1].Name)
-
-		By("waiting for pool-0 to scale down and pool-1 to scale up")
-		Eventually(func() error {
-			return checkDaemonSetStatus(ctx, client, pool0DSName, 0)
-		}, 420*time.Second, 1*time.Second).Should(Succeed())
-		By("waiting for the old pool-0 pod to leave the re-labeled node")
-		Eventually(func() (bool, error) {
-			return isDaemonSetPodRunningOnNode(ctx, client, pool0NodeName, pool0DSName)
-		}, 420*time.Second, 1*time.Second).Should(BeFalse())
-		Eventually(func() error {
-			return checkDaemonSetStatus(ctx, client, pool1DSName, 2)
-		}, 420*time.Second, 1*time.Second).Should(Succeed())
-
-		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
-
-		By("verifying VMI survived re-labeling")
-		checkVMIOperational(ctx, client, vmi)
-		checkBootID(vmi, bootID)
-	})
+			By("verifying VMI survived the handoff without restarting")
+			checkVMIOperational(ctx, client, vmi)
+			checkBootID(vmi, bootID)
+		},
+		Entry("from default to a dedicated pool", "default", "pool-0"),
+		Entry("from a dedicated pool to default", "pool-0", "default"),
+		Entry("between dedicated pools", "pool-0", "pool-1"),
+	)
 
 	It("should update a pool's image while VMIs are running", func() {
 		if flags.KubeVirtVersionTagAlt == "" {
@@ -752,12 +784,21 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(err).ToNot(HaveOccurred())
 		waitForPoolsBeReady(len(pools.Pools))
 
-		By("running a VMI")
+		By("waiting for the initial KubeVirt rollout to finish")
+		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+
+		By("running a VMI on a worker node whose handler image will change")
 		vmi, bootID := runVMI(ctx, client)
+		nodeName := vmi.Status.NodeName
+		node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		targetPoolName := node.Labels[poolSelectorLabelName]
+		Expect(targetPoolName).ToNot(BeEmpty())
+		targetPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, targetPoolName)
+		oldHandler := waitForHandlerPodOnNode(ctx, client, nodeName, targetPoolDSName, "")
 		checkVMIOperational(ctx, client, vmi)
 
-		By("getting current virt-handler image from pool-0")
-		targetPoolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pools.Pools[0].Name)
+		By(fmt.Sprintf("getting current virt-handler image from %s", targetPoolName))
 		ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, targetPoolDSName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
@@ -765,32 +806,46 @@ var _ = Describe("[sig-operator] virt-handler pools", Serial, decorators.SigOper
 		Expect(virtHandlerContainer).ToNot(BeNil())
 		originalImage := virtHandlerContainer.Image
 		altImage := replaceImageTag(originalImage, flags.KubeVirtVersionTagAlt)
+		Expect(altImage).ToNot(Equal(originalImage), "alternate image must trigger a rollout")
+		assertNoOverlap, stop, err := monitorVirtHandlerCoverage(ctx, client, virtHandlerName)
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(stop)
 
-		By("updating pool-0 with custom image")
+		By(fmt.Sprintf("updating %s with custom image", targetPoolName))
 		Expect(updateKvPools(ctx, client, func(kv *k6tv1.KubeVirt) {
 			for i := range kv.Spec.HandlerPools.Pools {
-				if kv.Spec.HandlerPools.Pools[i].Name == pools.Pools[0].Name {
+				if kv.Spec.HandlerPools.Pools[i].Name == targetPoolName {
 					kv.Spec.HandlerPools.Pools[i].VirtHandlerImage = altImage
 					break
 				}
 			}
 		})).To(Succeed())
 
-		By("waiting for pool-0 DS to roll out with new image")
+		By(fmt.Sprintf("waiting for %s DS to roll out with new image", targetPoolName))
 		Eventually(func(g Gomega) {
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, targetPoolDSName, metav1.GetOptions{})
 			g.Expect(err).ToNot(HaveOccurred())
 			container := findContainerByName(ds.Spec.Template.Spec.Containers, virtHandlerName)
 			g.Expect(container).ToNot(BeNil())
 			g.Expect(container.Image).To(Equal(altImage))
+			g.Expect(ds.Status.ObservedGeneration).To(Equal(ds.Generation))
+			g.Expect(ds.Status.UpdatedNumberScheduled).To(Equal(ds.Status.DesiredNumberScheduled))
 			g.Expect(ds.Status.DesiredNumberScheduled).To(Equal(ds.Status.NumberReady))
 			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
-		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for pool-0 DS to update image")
+		}, 240*time.Second, 1*time.Second).Should(Succeed(), "waiting for %s DS to update image", targetPoolName)
 
+		newHandler := waitForHandlerPodOnNode(ctx, client, nodeName, targetPoolDSName, oldHandler.UID)
+		container := findContainerByName(newHandler.Spec.Containers, virtHandlerName)
+		Expect(container).ToNot(BeNil())
+		Expect(container.Image).To(Equal(altImage))
 		testsuite.EnsureKubevirtReadyWithTimeout(libkubevirt.GetCurrentKv(client), 420*time.Second)
+		Expect(assertNoOverlap()).ToNot(HaveOccurred())
 
 		By("verifying other pool DSes still use default image")
-		for _, pool := range pools.Pools[1:] {
+		for _, pool := range pools.Pools {
+			if pool.Name == targetPoolName {
+				continue
+			}
 			poolDSName := fmt.Sprintf("%s-%s", virtHandlerName, pool.Name)
 			ds, err := client.AppsV1().DaemonSets(flags.KubeVirtInstallNamespace).Get(ctx, poolDSName, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
@@ -1084,6 +1139,12 @@ func listRunningPodsOnNode(ctx context.Context, client kubecli.KubevirtClient, n
 	}), nil
 }
 
+func isSchedulableWorker(node *corev1.Node) bool {
+	_, controlPlane := node.Labels["node-role.kubernetes.io/control-plane"]
+	_, master := node.Labels["node-role.kubernetes.io/master"]
+	return !controlPlane && !master && !node.Spec.Unschedulable && node.Labels[k6tv1.NodeSchedulable] == "true"
+}
+
 func getEligibleNodes(ctx context.Context, client kubecli.KubevirtClient, dsName string) ([]*corev1.Node, error) {
 	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -1217,23 +1278,6 @@ func isDaemonSetDeleted(ctx context.Context, client kubecli.KubevirtClient, dsNa
 	return false, err
 }
 
-func isDaemonSetPodRunningOnNode(ctx context.Context, client kubecli.KubevirtClient, nodeName, dsName string) (bool, error) {
-	pods, err := listRunningPodsOnNode(ctx, client, nodeName)
-	if err != nil {
-		return false, err
-	}
-
-	for _, pod := range pods {
-		for _, ref := range pod.OwnerReferences {
-			if ref.Kind == "DaemonSet" && ref.Name == dsName {
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
-}
-
 func findDefaultHandlerNode(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {
 	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -1270,35 +1314,142 @@ func findNodeWithLabel(ctx context.Context, client kubecli.KubevirtClient, label
 	return "", nil
 }
 
-// findNodeWithDualHandlerCoverage returns the name of the first node that has
-// running pods from two or more virt-handler DaemonSets (e.g. the default DS
-// and a pool DS running simultaneously). An empty string means no such node exists.
-func findNodeWithDualHandlerCoverage(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (string, error) {
-	nodesList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+// monitorVirtHandlerCoverage observes every pod update and counts non-terminal pods,
+// including scheduled Pending and terminating pods, even within one DaemonSet.
+// Its returned assertion waits for the watch to catch up before stopping it.
+func monitorVirtHandlerCoverage(ctx context.Context, client kubecli.KubevirtClient, virtHandlerName string) (func() error, func(), error) {
+	podClient := client.CoreV1().Pods(flags.KubeVirtInstallNamespace)
+	options := metav1.ListOptions{LabelSelector: k6tv1.AppLabel + "=" + virtHandlerName}
+	initialPods, err := podClient.List(ctx, options)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 
-	for _, node := range nodesList.Items {
-		pods, err := listPodsOnNode(ctx, client, node.Name, fields.OneTermEqualSelector("status.phase", string(corev1.PodRunning)))
-		if err != nil {
-			return "", err
-		}
+	type podVersion struct {
+		uid             types.UID
+		resourceVersion string
+	}
+	var observedVersions sync.Map
+	pods := make(map[types.UID]*corev1.Pod)
+	for i := range initialPods.Items {
+		pod := &initialPods.Items[i]
+		pods[pod.UID] = pod
+		observedVersions.Store(podVersion{pod.UID, pod.ResourceVersion}, struct{}{})
+	}
+	if err := checkVirtHandlerCoverage(pods); err != nil {
+		return nil, nil, err
+	}
 
-		owningDSes := map[string]struct{}{}
-		for _, pod := range pods {
-			for _, ref := range pod.OwnerReferences {
-				if ref.Kind == "DaemonSet" && strings.HasPrefix(ref.Name, virtHandlerName) {
-					owningDSes[ref.Name] = struct{}{}
+	monitorCtx, cancel := context.WithCancel(ctx)
+	podWatch, err := watchtools.NewRetryWatcher(initialPods.ResourceVersion, &cache.ListWatch{
+		WatchFunc: func(watchOptions metav1.ListOptions) (watch.Interface, error) {
+			watchOptions.LabelSelector = options.LabelSelector
+			return podClient.Watch(monitorCtx, watchOptions)
+		},
+	})
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+
+	var monitorErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer podWatch.Stop()
+		for {
+			select {
+			case <-monitorCtx.Done():
+				return
+			case event, open := <-podWatch.ResultChan():
+				if monitorCtx.Err() != nil {
+					return
 				}
+				if !open {
+					monitorErr = errors.New("virt-handler pod watch closed before monitoring completed")
+					return
+				}
+				if event.Type == watch.Error {
+					monitorErr = fmt.Errorf("watching virt-handler pods: %w", k8serrors.FromObject(event.Object))
+					return
+				}
+				if event.Type == watch.Bookmark {
+					continue
+				}
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					monitorErr = fmt.Errorf("unexpected virt-handler watch object: %T", event.Object)
+					return
+				}
+				if event.Type == watch.Deleted {
+					delete(pods, pod.UID)
+				} else {
+					pods[pod.UID] = pod
+				}
+				if monitorErr = checkVirtHandlerCoverage(pods); monitorErr != nil {
+					return
+				}
+				observedVersions.Store(podVersion{pod.UID, pod.ResourceVersion}, struct{}{})
 			}
 		}
-
-		if len(owningDSes) > 1 {
-			return node.Name, nil
-		}
+	}()
+	stopMonitoring := func() {
+		cancel()
+		podWatch.Stop()
+		<-done
+		<-podWatch.Done()
 	}
-	return "", nil
+
+	return func() error {
+		// Wait until the watch has processed the ready replacements visible now;
+		// canceling immediately could discard queued events from the handoff.
+		finalPods, err := podClient.List(ctx, options)
+		if err != nil {
+			return err
+		}
+
+		err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true,
+			func(ctx context.Context) (bool, error) {
+				select {
+				case <-done:
+					return true, nil // Report the watch failure below instead of timing out.
+				default:
+				}
+				for _, pod := range finalPods.Items {
+					if _, seen := observedVersions.Load(podVersion{pod.UID, pod.ResourceVersion}); !seen {
+						return false, nil
+					}
+				}
+				return true, nil
+			})
+
+		stopMonitoring()
+
+		if err != nil || monitorErr != nil {
+			monitorErr = errors.Join(err, monitorErr)
+		}
+
+		return monitorErr
+	}, stopMonitoring, nil
+}
+
+func checkVirtHandlerCoverage(pods map[types.UID]*corev1.Pod) error {
+	podByNode := make(map[string]*corev1.Pod)
+	for _, pod := range pods {
+		// Match the scheduler's non-terminal pod cache: completed pods can remain
+		// in the API after their replacements have been scheduled.
+		if pod.Spec.NodeName == "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		if other, exists := podByNode[pod.Spec.NodeName]; exists {
+			return fmt.Errorf("node %s has overlapping virt-handler pods: %s (%s, phase=%s, deleting=%t, resourceVersion=%s) and %s (%s, phase=%s, deleting=%t, resourceVersion=%s)",
+				pod.Spec.NodeName,
+				other.Name, other.UID, other.Status.Phase, other.DeletionTimestamp != nil, other.ResourceVersion,
+				pod.Name, pod.UID, pod.Status.Phase, pod.DeletionTimestamp != nil, pod.ResourceVersion)
+		}
+		podByNode[pod.Spec.NodeName] = pod
+	}
+	return nil
 }
 
 func replaceImageTag(image string, newTag string) string {
