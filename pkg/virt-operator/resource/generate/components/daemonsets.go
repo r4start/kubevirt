@@ -464,6 +464,8 @@ func setVirtHandlerAffinity(
 		return nil
 	}
 
+	addVirtHandlerPodAntiAffinity(podTemplateSpec)
+
 	if pool == nil {
 		exclusionTerms, err := generateDefaultHandlerPoolExclusions(config.HandlerPools.PartitionKeys, config.HandlerPools.Pools)
 		if err != nil {
@@ -473,38 +475,14 @@ func setVirtHandlerAffinity(
 		return nil
 	}
 
+	if podTemplateSpec.Labels == nil {
+		podTemplateSpec.Labels = make(map[string]string)
+	}
 	podTemplateSpec.Labels[handlerPoolLabel] = pool.Name
-	if podTemplateSpec.Spec.NodeSelector == nil && pool.NodeSelector != nil {
+	if podTemplateSpec.Spec.NodeSelector == nil {
 		podTemplateSpec.Spec.NodeSelector = make(map[string]string)
 	}
-	for k, v := range pool.NodeSelector {
-		podTemplateSpec.Spec.NodeSelector[k] = v
-	}
-
-	var antiAffinity []corev1.PodAffinityTerm
-	for _, otherPool := range config.HandlerPools.Pools {
-		if otherPool.Name == pool.Name {
-			continue
-		}
-		antiAffinity = append(antiAffinity, corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					virtv1.AppLabel:  VirtHandlerName,
-					handlerPoolLabel: otherPool.Name,
-				},
-			},
-			TopologyKey: "kubernetes.io/hostname",
-		})
-	}
-	if podTemplateSpec.Spec.Affinity == nil {
-		podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
-	}
-	if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
-		podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
-	}
-
-	podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
-	podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, antiAffinity...)
+	maps.Copy(podTemplateSpec.Spec.NodeSelector, pool.NodeSelector)
 	return nil
 }
 
@@ -682,4 +660,27 @@ func (tree *nodeSelectorTermsTree) Terms() ([]corev1.NodeSelectorTerm, error) {
 	}
 
 	return terms, nil
+}
+
+func addVirtHandlerPodAntiAffinity(podTemplateSpec *corev1.PodTemplateSpec) {
+	antiAffinity := []corev1.PodAffinityTerm{
+		{
+			LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				virtv1.AppLabel: VirtHandlerName,
+			}},
+			TopologyKey: corev1.LabelHostname,
+		},
+	}
+
+	if podTemplateSpec.Spec.Affinity == nil {
+		podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+	}
+	if podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+		podTemplateSpec.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
+	}
+	podAntiAffinity := podTemplateSpec.Spec.Affinity.PodAntiAffinity
+	podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(
+		podAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		antiAffinity...,
+	)
 }
