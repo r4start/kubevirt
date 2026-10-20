@@ -36,6 +36,7 @@ go_test(
     srcs = [
         "client_test.go",
         "config_test.go",
+        "selectors_test.go",
         "util_suite_test.go",
     ],
     embed = [":go_default_library"],
