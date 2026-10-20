@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -423,6 +424,7 @@ func checkHandlerPoolsStatus(
 
 	var ds *appsv1.DaemonSet
 	for _, item := range dss.Items {
+		addOrUpdateDaemonPodTolerations(&item.Spec.Template.Spec)
 		matches := isDaemonSetEligibleOnNode(&item, node)
 		if matches && ds != nil {
 			return false, fmt.Errorf("several virt-handler DaemonSets are running on the node: %s", node.Name)
@@ -555,4 +557,92 @@ func isDaemonSetEligibleOnNode(ds *appsv1.DaemonSet, node *v1.Node) bool {
 	)
 
 	return !untolerated
+}
+
+// addOrUpdateDaemonPodTolerations applies the tolerations Kubernetes adds to DaemonSet pods.
+// Adapted from Kubernetes v1.32.5:
+// https://github.com/kubernetes/kubernetes/blob/v1.32.5/pkg/controller/daemon/util/daemonset_util.go
+func addOrUpdateDaemonPodTolerations(spec *v1.PodSpec) {
+	// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
+	// Add infinite toleration for taint notReady:NoExecute here
+	// to survive taint-based eviction enforced by NodeController
+	// when node turns not ready.
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodeNotReady,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoExecute,
+	})
+
+	// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
+	// Add infinite toleration for taint unreachable:NoExecute here
+	// to survive taint-based eviction enforced by NodeController
+	// when node turns unreachable.
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodeUnreachable,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoExecute,
+	})
+
+	// According to TaintNodesByCondition feature, all DaemonSet pods should tolerate
+	// MemoryPressure, DiskPressure, PIDPressure, Unschedulable and NetworkUnavailable taints.
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodeDiskPressure,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoSchedule,
+	})
+
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodeMemoryPressure,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoSchedule,
+	})
+
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodePIDPressure,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoSchedule,
+	})
+
+	addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		Key:      v1.TaintNodeUnschedulable,
+		Operator: v1.TolerationOpExists,
+		Effect:   v1.TaintEffectNoSchedule,
+	})
+
+	if spec.HostNetwork {
+		addOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+			Key:      v1.TaintNodeNetworkUnavailable,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoSchedule,
+		})
+	}
+}
+
+// addOrUpdateTolerationInPodSpec adds or updates a matching toleration.
+// Adapted from Kubernetes v1.32.5:
+// https://github.com/kubernetes/kubernetes/blob/v1.32.5/pkg/apis/core/v1/helper/helpers.go
+func addOrUpdateTolerationInPodSpec(spec *v1.PodSpec, toleration *v1.Toleration) bool {
+	podTolerations := spec.Tolerations
+
+	var newTolerations []v1.Toleration
+	updated := false
+	for i := range podTolerations {
+		if toleration.MatchToleration(&podTolerations[i]) {
+			if reflect.DeepEqual(toleration, &podTolerations[i]) {
+				return false
+			}
+			newTolerations = append(newTolerations, *toleration)
+			updated = true
+			continue
+		}
+
+		newTolerations = append(newTolerations, podTolerations[i])
+	}
+
+	if !updated {
+		newTolerations = append(newTolerations, *toleration)
+	}
+
+	spec.Tolerations = newTolerations
+	return true
 }
