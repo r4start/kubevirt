@@ -140,7 +140,7 @@ var _ = Describe("Application", func() {
 		app.informerFactory = controller.NewKubeInformerFactory(nil, nil, nil, nil, "test")
 		app.evacuationController, _ = evacuation.NewEvacuationController(vmiInformer, migrationInformer, nodeInformer, podInformer, recorder, virtClient, config)
 		app.disruptionBudgetController, _ = disruptionbudget.NewDisruptionBudgetController(vmiInformer, pdbInformer, podInformer, migrationInformer, recorder, virtClient)
-		app.nodeController, _ = node.NewController(virtClient, nodeInformer, vmiInformer, recorder)
+		app.nodeController, _ = node.NewController(virtClient, nodeInformer, vmiInformer, recorder, config)
 		app.vmiController, _ = vmi.NewController(
 			workqueue.NewTypedRateLimitingQueueWithConfig(
 				workqueue.DefaultTypedControllerRateLimiter[string](),

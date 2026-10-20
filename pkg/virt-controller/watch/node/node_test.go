@@ -30,6 +30,7 @@ import (
 
 	controllertesting "kubevirt.io/kubevirt/pkg/controller/testing"
 	"kubevirt.io/kubevirt/pkg/testutils"
+	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 	watchtesting "kubevirt.io/kubevirt/pkg/virt-controller/watch/testing"
 )
 
@@ -48,6 +49,7 @@ var _ = Describe("Node controller with", func() {
 	var virtClient *kubecli.MockKubevirtClient
 	var kubeClient *fake.Clientset
 	var vmiFeeder *testutils.VirtualMachineFeeder[string]
+	var kubeVirtStore cache.Store
 
 	syncCaches := func(stop chan struct{}) {
 		go nodeInformer.Run(stop)
@@ -66,7 +68,28 @@ var _ = Describe("Node controller with", func() {
 		recorder = record.NewFakeRecorder(100)
 		recorder.IncludeObject = true
 
-		controller, _ = NewController(virtClient, nodeInformer, vmiInformer, recorder)
+		config, _, kvStore := testutils.NewFakeClusterConfigUsingKV(&v1.KubeVirt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kubevirt",
+				Namespace: "kubevirt",
+			},
+			Spec: v1.KubeVirtSpec{
+				Configuration: v1.KubeVirtConfiguration{
+					DeveloperConfiguration: &v1.DeveloperConfiguration{
+						FeatureGates: []string{featuregate.HandlerPoolsGate},
+					},
+				},
+				HandlerPools: &v1.HandlerPoolsConfig{
+					PartitionKeys: []string{"pool"},
+					Pools: []v1.HandlerPoolConfig{{
+						Name:         "test",
+						NodeSelector: map[string]string{"pool": "test"},
+					}},
+				},
+			},
+		})
+		kubeVirtStore = kvStore
+		controller, _ = NewController(virtClient, nodeInformer, vmiInformer, recorder, config)
 		// Wrap our workqueue to have a way to detect when we are done processing updates
 		mockQueue = testutils.NewMockWorkQueue(controller.Queue)
 		controller.Queue = mockQueue
@@ -366,7 +389,66 @@ var _ = Describe("Node controller with", func() {
 			vmi = watchtesting.NewRunningVirtualMachine("vmi", node)
 		})
 
-		DescribeTable("testing orpahned event", func(returnVirtHandler bool, ds *appv1.DaemonSet, hasrunningvmi bool, expectEvent bool) {
+		DescribeTable("should reconcile a terminated launcher according to the handler pool configuration",
+			func(gates []string, pools *v1.HandlerPoolsConfig, expectError bool) {
+				kv := testutils.GetFakeKubeVirtClusterConfig(kubeVirtStore).DeepCopy()
+				kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = gates
+				kv.Spec.HandlerPools = pools
+				testutils.UpdateFakeKubeVirtClusterConfig(kubeVirtStore, kv)
+
+				node.Annotations[v1.VirtHandlerHeartbeat] = nowAsJSONWithOffset(-10 * time.Minute)
+				node.Labels[v1.NodeSchedulable] = "false"
+				Expect(controller.nodeStore.Add(node)).To(Succeed())
+				addVMI(vmi)
+
+				ds := HealthVirtHandlerDS()
+				ds.Spec.Template.Spec.NodeSelector = map[string]string{"pool": "test"}
+				pod := NewUnhealthyPodForVirtualMachine("virt-launcher", vmi)
+				pod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(vmi, v1.VirtualMachineInstanceGroupVersionKind)}
+				kubeClient.Fake.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					listAction := action.(k8stesting.ListAction)
+					if strings.Contains(listAction.GetListRestrictions().Labels.String(), "virt-handler") {
+						return true, &k8sv1.PodList{}, nil
+					}
+					return true, &k8sv1.PodList{Items: []k8sv1.Pod{*pod}}, nil
+				})
+				kubeClient.Fake.PrependReactor("list", "daemonsets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, &appv1.DaemonSetList{Items: []appv1.DaemonSet{*ds}}, nil
+				})
+
+				err := controller.execute(node.Name)
+				if expectError {
+					Expect(err).To(MatchError(ContainSubstring("virt-handler DaemonSet isn't running on the node")))
+					updatedVMI, err := fakeVirtClient.KubevirtV1().VirtualMachineInstances(vmi.Namespace).Get(context.Background(), vmi.Name, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					Expect(updatedVMI.Status.Phase).To(Equal(v1.Running))
+					return
+				}
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(recorder.Events).To(Receive(And(
+					HavePrefix(k8sv1.EventTypeWarning+" "+NodeUnresponsiveReason+" "),
+					ContainSubstring("virt-handler is not present, there are orphaned vmis on this node."),
+				)))
+				Expect(recorder.Events).To(Receive(And(
+					HavePrefix(k8sv1.EventTypeNormal+" "+NodeUnresponsiveReason+" "),
+					ContainSubstring(fmt.Sprintf("virt-handler on node %s is not responsive, marking VMI as failed", node.Name)),
+				)))
+				expectVMIToFailedStatus(vmi.Name)
+			},
+			Entry("with the feature gate disabled", []string{}, &v1.HandlerPoolsConfig{
+				PartitionKeys: []string{"pool"},
+				Pools:         []v1.HandlerPoolConfig{{Name: "test", NodeSelector: map[string]string{"pool": "test"}}},
+			}, false),
+			Entry("with the feature gate enabled and nil pools", []string{featuregate.HandlerPoolsGate}, (*v1.HandlerPoolsConfig)(nil), false),
+			Entry("with the feature gate enabled and empty pools", []string{featuregate.HandlerPoolsGate}, &v1.HandlerPoolsConfig{}, false),
+			Entry("with the feature gate enabled and configured pools", []string{featuregate.HandlerPoolsGate}, &v1.HandlerPoolsConfig{
+				PartitionKeys: []string{"pool"},
+				Pools:         []v1.HandlerPoolConfig{{Name: "test", NodeSelector: map[string]string{"pool": "test"}}},
+			}, true),
+		)
+
+		DescribeTable("testing orphaned event", func(returnVirtHandler bool, ds *appv1.DaemonSet, hasrunningvmi bool, expectEvent bool) {
 
 			kubeClient.Fake.PrependReactor("list", "pods", func(action k8stesting.Action) (handled bool, obj runtime.Object, err error) {
 				if returnVirtHandler {
@@ -398,7 +480,29 @@ var _ = Describe("Node controller with", func() {
 		)
 	})
 
-	Context("check daemonset status", func() {
+	Context("check daemonset status without pools", func() {
+		DescribeTable("should require one daemonset and check its status",
+			func(daemonsets []appv1.DaemonSet, expectedRunning bool, expectError bool) {
+				kubeClient.Fake.PrependReactor("list", "daemonsets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, &appv1.DaemonSetList{Items: daemonsets}, nil
+				})
+
+				running, err := checkDaemonSetStatus(virtClient, fields.ParseSelectorOrDie("kubevirt.io=virt-handler"))
+				if expectError {
+					Expect(err).To(MatchError("should only be running one virt-handler DaemonSet"))
+				} else {
+					Expect(err).ToNot(HaveOccurred())
+				}
+				Expect(running).To(Equal(expectedRunning))
+			},
+			Entry("with no daemonsets", []appv1.DaemonSet{}, false, true),
+			Entry("with multiple daemonsets", []appv1.DaemonSet{*HealthVirtHandlerDS(), *HealthVirtHandlerDS()}, false, true),
+			Entry("with one healthy daemonset", []appv1.DaemonSet{*HealthVirtHandlerDS()}, true, false),
+			Entry("with one unhealthy daemonset", []appv1.DaemonSet{*UnHealthVirtHandlerDS()}, false, false),
+		)
+	})
+
+	Context("check handler pools status", func() {
 		var selector fields.Selector
 
 		BeforeEach(func() {
@@ -421,7 +525,7 @@ var _ = Describe("Node controller with", func() {
 				},
 			)
 
-			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			running, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(running).To(BeTrue())
 		})
@@ -458,7 +562,7 @@ var _ = Describe("Node controller with", func() {
 				},
 			)
 
-			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			running, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(running).To(BeTrue())
 		})
@@ -479,7 +583,7 @@ var _ = Describe("Node controller with", func() {
 				},
 			)
 
-			_, err := checkDaemonSetStatus(virtClient, selector, node)
+			_, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).To(MatchError(ContainSubstring("several virt-handler DaemonSets are running on the node")))
 		})
 
@@ -499,7 +603,7 @@ var _ = Describe("Node controller with", func() {
 				},
 			)
 
-			_, err := checkDaemonSetStatus(virtClient, selector, node)
+			_, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).To(MatchError(ContainSubstring("virt-handler DaemonSet isn't running on the node")))
 		})
 
@@ -533,7 +637,7 @@ var _ = Describe("Node controller with", func() {
 				},
 			)
 
-			running, err := checkDaemonSetStatus(virtClient, selector, node)
+			running, err := checkHandlerPoolsStatus(virtClient, selector, node)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(running).To(BeTrue())
 		})

@@ -27,6 +27,8 @@ import (
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/util/lookup"
+	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
+	"kubevirt.io/kubevirt/pkg/virt-config/featuregate"
 )
 
 const (
@@ -44,11 +46,18 @@ type Controller struct {
 	recorder         record.EventRecorder
 	heartBeatTimeout time.Duration
 	recheckInterval  time.Duration
+	clusterConfig    *virtconfig.ClusterConfig
 	hasSynced        func() bool
 }
 
 // NewController creates a new instance of the NodeController struct.
-func NewController(clientset kubecli.KubevirtClient, nodeInformer cache.SharedIndexInformer, vmiInformer cache.SharedIndexInformer, recorder record.EventRecorder) (*Controller, error) {
+func NewController(
+	clientset kubecli.KubevirtClient,
+	nodeInformer cache.SharedIndexInformer,
+	vmiInformer cache.SharedIndexInformer,
+	recorder record.EventRecorder,
+	clusterConfig *virtconfig.ClusterConfig,
+) (*Controller, error) {
 	c := &Controller{
 		clientset: clientset,
 		Queue: workqueue.NewTypedRateLimitingQueueWithConfig[string](
@@ -60,6 +69,7 @@ func NewController(clientset kubecli.KubevirtClient, nodeInformer cache.SharedIn
 		recorder:         recorder,
 		heartBeatTimeout: 5 * time.Minute,
 		recheckInterval:  1 * time.Minute,
+		clusterConfig:    clusterConfig,
 	}
 
 	c.hasSynced = func() bool {
@@ -318,6 +328,11 @@ func (c *Controller) markNodeAsUnresponsive(node *v1.Node, logger *log.FilteredL
 }
 
 func (c *Controller) createEventIfNodeHasOrphanedVMIs(node *v1.Node, vmis []*virtv1.VirtualMachineInstance) error {
+	var (
+		running bool
+		err     error
+	)
+
 	// node is not running any vmis so we don't need to check anything else
 	if len(vmis) == 0 || node == nil {
 		return nil
@@ -340,7 +355,20 @@ func (c *Controller) createEventIfNodeHasOrphanedVMIs(node *v1.Node, vmis []*vir
 		return nil
 	}
 
-	running, err := checkDaemonSetStatus(c.clientset, virtHandlerSelector, node)
+	isHandlerPoolsEnabled := false
+	if c.clusterConfig.IsFeatureGateEnabled(featuregate.HandlerPoolsGate) {
+		kv := c.clusterConfig.GetConfigFromKubeVirtCR()
+		isHandlerPoolsEnabled = kv != nil &&
+			kv.Spec.HandlerPools != nil &&
+			len(kv.Spec.HandlerPools.Pools) > 0
+	}
+
+	if isHandlerPoolsEnabled {
+		running, err = checkHandlerPoolsStatus(c.clientset, virtHandlerSelector, node)
+	} else {
+		running, err = checkDaemonSetStatus(c.clientset, virtHandlerSelector)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -357,7 +385,29 @@ func (c *Controller) createEventIfNodeHasOrphanedVMIs(node *v1.Node, vmis []*vir
 	return nil
 }
 
-func checkDaemonSetStatus(
+func checkDaemonSetStatus(clientset kubecli.KubevirtClient, selector fields.Selector) (bool, error) {
+	dss, err := clientset.AppsV1().DaemonSets(v1.NamespaceAll).List(context.Background(), metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+
+	if err != nil {
+		return false, err
+	}
+
+	if len(dss.Items) != 1 {
+		return false, fmt.Errorf("should only be running one virt-handler DaemonSet")
+	}
+
+	ds := dss.Items[0]
+	desired, scheduled, ready := ds.Status.DesiredNumberScheduled, ds.Status.CurrentNumberScheduled, ds.Status.NumberReady
+	if desired != scheduled && desired != ready {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func checkHandlerPoolsStatus(
 	clientset kubecli.KubevirtClient,
 	selector fields.Selector,
 	node *v1.Node,
